@@ -16,3 +16,13 @@ func sortActions(actions []Action) {
 		return actions[i].ID < actions[j].ID
 	})
 }
+
+// sortEvents 按时间稳定排序，保证历史重放结果与实时处理一致。
+func sortEvents(events []Event) {
+	sort.SliceStable(events, func(i, j int) bool {
+		if !events[i].Time.Equal(events[j].Time) {
+			return events[i].Time.Before(events[j].Time)
+		}
+		return false
+	})
+}

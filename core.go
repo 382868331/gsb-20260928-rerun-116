@@ -9,29 +9,35 @@ import (
 const maxEvaluationPasses = 64
 
 type ruleRuntime struct {
-	Satisfied bool      `json:"satisfied"`
-	Since     time.Time `json:"since"`
-	Fired     bool      `json:"fired"`
-	Blocked   bool      `json:"blocked"`
+	Satisfied    bool       `json:"satisfied"`
+	Since        time.Time  `json:"since"`
+	Fired        bool       `json:"fired"`
+	Blocked      bool       `json:"blocked"`
+	BlockedUntil *time.Time `json:"blocked_until,omitempty"`
 }
 
 type persistentState struct {
-	Devices map[string]DeviceState `json:"devices"`
-	Rules   map[string]ruleRuntime `json:"rules"`
-	Actions map[string]Action      `json:"actions"`
-	Seq     uint64                 `json:"seq"`
+	Devices   map[string]DeviceState `json:"devices"`
+	Rules     map[string]ruleRuntime `json:"rules"`
+	Actions   map[string]Action      `json:"actions"`
+	Seq       uint64                 `json:"seq"`
+	History   []Event                `json:"history,omitempty"`
+	Applied   []ActionRecord         `json:"applied,omitempty"`
+	Decisions []Decision             `json:"decisions,omitempty"`
 }
 
 type Core struct {
-	mu      sync.Mutex
-	now     func() time.Time
-	store   Store
-	rules   map[string]Rule
-	devices map[string]DeviceState
-	runtime map[string]ruleRuntime
-	pending map[string]Action
-	applied []ActionRecord
-	seq     uint64
+	mu        sync.Mutex
+	now       func() time.Time
+	store     Store
+	rules     map[string]Rule
+	devices   map[string]DeviceState
+	runtime   map[string]ruleRuntime
+	pending   map[string]Action
+	applied   []ActionRecord
+	history   []Event
+	decisions []Decision
+	seq       uint64
 }
 
 func NewCore(store Store, now func() time.Time) (*Core, error) {
@@ -58,6 +64,9 @@ func NewCore(store Store, now func() time.Time) (*Core, error) {
 		core.runtime = state.Rules
 		core.pending = state.Actions
 		core.seq = state.Seq
+		core.applied = state.Applied
+		core.history = state.History
+		core.decisions = state.Decisions
 		if core.devices == nil {
 			core.devices = make(map[string]DeviceState)
 		}
@@ -95,49 +104,11 @@ func (c *Core) Process(event Event) ([]Action, error) {
 	if at.IsZero() {
 		at = c.now()
 	}
+	event.Time = at
+	c.history = append(c.history, event)
 	c.applyEventLocked(event, at)
 
-	var applied []Action
-	for pass := 0; pass < maxEvaluationPasses; pass++ {
-		changed := false
-		for _, rule := range c.orderedRulesLocked() {
-			runtime := c.runtime[rule.ID]
-			matched := rule.Condition.Evaluate(c.snapshotLocked())
-			if !matched {
-				if runtime.Satisfied || runtime.Fired || runtime.Blocked {
-					c.runtime[rule.ID] = ruleRuntime{}
-					changed = true
-				}
-				continue
-			}
-			if runtime.Blocked {
-				continue
-			}
-			if !runtime.Satisfied {
-				runtime.Satisfied = true
-				runtime.Since = at
-				runtime.Fired = false
-				c.runtime[rule.ID] = runtime
-				changed = true
-			}
-			if runtime.Fired || at.Sub(runtime.Since) < rule.Duration {
-				continue
-			}
-			runtime.Fired = true
-			c.runtime[rule.ID] = runtime
-			action := c.enqueueLocked(rule, at)
-			if action.CompleteAt.After(at) {
-				changed = true
-				continue
-			}
-			c.applyPendingLocked(action, at)
-			applied = append(applied, action)
-			changed = true
-		}
-		if !changed {
-			break
-		}
-	}
+	applied := c.evaluateLocked(at)
 	if err := c.saveLocked(); err != nil {
 		return nil, err
 	}
@@ -148,60 +119,208 @@ func (c *Core) Tick(at time.Time) ([]Action, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var applied []Action
-	for pass := 0; pass < maxEvaluationPasses; pass++ {
-		changed := false
-		for _, action := range c.orderedPendingLocked() {
-			if action.CompleteAt.After(at) {
-				continue
-			}
-			c.applyPendingLocked(action, at)
-			applied = append(applied, action)
-			changed = true
-		}
-		for _, rule := range c.orderedRulesLocked() {
-			runtime := c.runtime[rule.ID]
-			matched := rule.Condition.Evaluate(c.snapshotLocked())
-			if !matched {
-				if runtime.Satisfied || runtime.Fired || runtime.Blocked {
-					c.runtime[rule.ID] = ruleRuntime{}
-					changed = true
-				}
-				continue
-			}
-			runtime = c.runtime[rule.ID]
-			if runtime.Blocked || runtime.Fired {
-				continue
-			}
-			if !runtime.Satisfied {
-				runtime.Satisfied = true
-				runtime.Since = at
-				c.runtime[rule.ID] = runtime
-				changed = true
-				continue
-			}
-			if at.Sub(runtime.Since) < rule.Duration {
-				continue
-			}
-			runtime.Fired = true
-			c.runtime[rule.ID] = runtime
-			action := c.enqueueLocked(rule, at)
-			if action.CompleteAt.After(at) {
-				changed = true
-				continue
-			}
-			c.applyPendingLocked(action, at)
-			applied = append(applied, action)
-			changed = true
-		}
-		if !changed {
-			break
-		}
-	}
+	applied := c.evaluateLocked(at)
 	if err := c.saveLocked(); err != nil {
 		return nil, err
 	}
 	return applied, nil
+}
+
+// evaluateLocked 是唯一的裁决入口：在给定时刻推进所有到期延迟动作，
+// 然后按规则顺序评估持续条件。整个过程按固定点方式重复，直到没有新变化，
+// 从而允许动作生成的状态触发其他规则，同时每轮每条规则最多触发一次，
+// 保证相互触发的规则不会无限循环。
+func (c *Core) evaluateLocked(at time.Time) []Action {
+	var applied []Action
+	for pass := 0; pass < maxEvaluationPasses; pass++ {
+		changed := c.expireBlocksLocked(at)
+		dueChanged := c.processDueLocked(at, &applied)
+		fireChanged := c.evaluateRulesLocked(at)
+		if !changed && !dueChanged && !fireChanged {
+			break
+		}
+	}
+	c.arbitrateLocked(at)
+	return applied
+}
+
+// expireBlocksLocked 解除已到期的人工覆盖。TTL 覆盖到期后规则重新开始观察
+// 条件：必须先再次看到条件为真并持续满足，才会产生新动作。
+func (c *Core) expireBlocksLocked(at time.Time) bool {
+	changed := false
+	for id, runtime := range c.runtime {
+		if runtime.BlockedUntil != nil && !runtime.BlockedUntil.After(at) {
+			c.runtime[id] = ruleRuntime{}
+			changed = true
+		}
+	}
+	return changed
+}
+
+// processDueLocked 执行（或取消）所有到点的延迟动作。
+// 手动操作结束后绝不能直接执行早已失效的动作：到点时重新检查
+// 规则是否仍被人工覆盖、条件是否仍然成立，任一不满足即取消并记录原因。
+func (c *Core) processDueLocked(at time.Time, applied *[]Action) bool {
+	changed := false
+	winners := c.arbitrationWinnersLocked()
+	for _, action := range c.orderedPendingLocked() {
+		if action.CompleteAt.After(at) {
+			continue
+		}
+		rule, hasRule := c.rules[action.RuleID]
+		if !hasRule {
+			c.cancelPendingLocked(action, at, ReasonConditionFalse)
+			changed = true
+			continue
+		}
+		if c.isBlockedLocked(c.runtime[action.RuleID], at) {
+			c.cancelPendingLocked(action, at, ReasonRuleBlocked)
+			changed = true
+			continue
+		}
+		if !rule.Condition.Evaluate(c.snapshotLocked()) {
+			c.cancelPendingLocked(action, at, ReasonConditionFalse)
+			changed = true
+			continue
+		}
+		if winners[arbitrationKey{action.DeviceID, action.Name}] != action.ID {
+			c.cancelPendingLocked(action, at, ReasonSuperseded)
+			changed = true
+			continue
+		}
+		delete(c.pending, action.ID)
+		c.applyPendingLocked(action, at)
+		*applied = append(*applied, action)
+		changed = true
+	}
+	return changed
+}
+
+type arbitrationKey struct{ device, name string }
+
+// arbitrationWinnersLocked 为每个被控属性选出当前待执行动作的裁决赢家。
+func (c *Core) arbitrationWinnersLocked() map[arbitrationKey]string {
+	winners := make(map[arbitrationKey]string)
+	for _, action := range c.orderedPendingLocked() {
+		key := arbitrationKey{action.DeviceID, action.Name}
+		winnerID, exists := winners[key]
+		if !exists {
+			winners[key] = action.ID
+			continue
+		}
+		if winnerID == action.ID {
+			continue
+		}
+		winner := c.pending[winnerID]
+		if winner.Value == action.Value {
+			continue
+		}
+		if c.actionWinsLocked(action, winner) {
+			winners[key] = action.ID
+		}
+	}
+	return winners
+}
+
+// evaluateRulesLocked 按稳定顺序评估一次所有规则的持续条件。
+func (c *Core) evaluateRulesLocked(at time.Time) bool {
+	changed := false
+	for _, rule := range c.orderedRulesLocked() {
+		runtime := c.runtime[rule.ID]
+		matched := rule.Condition.Evaluate(c.snapshotLocked())
+		if !matched {
+			// 条件变假会解除“直到重新装弹”式人工覆盖，并重置持续计时。
+			if runtime.Satisfied || runtime.Fired || runtime.Blocked {
+				c.runtime[rule.ID] = ruleRuntime{}
+				changed = true
+			}
+			continue
+		}
+		// TTL 覆盖期内条件即使仍为真也不能触发；TTL=0 的覆盖已在上面
+		// 借助“条件变假”解除。
+		if c.isBlockedLocked(runtime, at) {
+			continue
+		}
+		if !runtime.Satisfied {
+			runtime.Satisfied = true
+			runtime.Since = at
+			runtime.Fired = false
+			c.runtime[rule.ID] = runtime
+			changed = true
+			continue
+		}
+		if runtime.Fired || at.Sub(runtime.Since) < rule.Duration {
+			continue
+		}
+		runtime.Fired = true
+		c.runtime[rule.ID] = runtime
+		action := c.enqueueLocked(rule, at)
+		if action.CompleteAt.After(at) {
+			c.recordDecisionLocked(Decision{
+				At: at, Outcome: OutcomeScheduled, Reason: ReasonConditionHeld,
+				RuleID: rule.ID, ActionID: action.ID,
+				DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
+			})
+			changed = true
+			continue
+		}
+		// 无延迟动作直接视为已到点，交给下一轮 processDue 做重校验与裁决。
+		changed = true
+	}
+	return changed
+}
+
+// arbitrateLocked 裁决同一设备同一属性上互相冲突的待执行动作：
+// 优先级高者胜，相同优先级规则 ID 较小者稳定获胜，其余动作取消。
+// 目标值相同的动作不视为冲突，较早的一个保留，重复项去重。
+func (c *Core) arbitrateLocked(at time.Time) {
+	winners := c.arbitrationWinnersLocked()
+	seen := make(map[string]bool)
+	for _, action := range c.orderedPendingLocked() {
+		key := arbitrationKey{action.DeviceID, action.Name}
+		winnerID := winners[key]
+		if winnerID == action.ID {
+			if seen[winnerID] {
+				c.cancelPendingLocked(action, at, ReasonDuplicate)
+			}
+			seen[action.ID] = true
+			continue
+		}
+		winner := c.pending[winnerID]
+		if winner.Value == action.Value {
+			c.cancelPendingLocked(action, at, ReasonDuplicate)
+		} else {
+			c.cancelPendingLocked(action, at, ReasonSuperseded)
+		}
+	}
+}
+
+func (c *Core) actionWinsLocked(candidate, incumbent Action) bool {
+	candidateRule := c.rules[candidate.RuleID]
+	incumbentRule := c.rules[incumbent.RuleID]
+	if candidateRule.Priority != incumbentRule.Priority {
+		return candidateRule.Priority > incumbentRule.Priority
+	}
+	if candidateRule.ID != incumbentRule.ID {
+		return candidateRule.ID < incumbentRule.ID
+	}
+	return candidate.ID < incumbent.ID
+}
+
+func (c *Core) isBlockedLocked(runtime ruleRuntime, at time.Time) bool {
+	if runtime.BlockedUntil != nil {
+		return runtime.BlockedUntil.After(at)
+	}
+	return runtime.Blocked
+}
+
+func (c *Core) cancelPendingLocked(action Action, at time.Time, reason Reason) {
+	delete(c.pending, action.ID)
+	c.recordDecisionLocked(Decision{
+		At: at, Outcome: OutcomeCanceled, Reason: reason,
+		RuleID: action.RuleID, ActionID: action.ID,
+		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
+	})
 }
 
 func (c *Core) Snapshot() Snapshot {
@@ -222,6 +341,63 @@ func (c *Core) AppliedActions() []ActionRecord {
 	return append([]ActionRecord(nil), c.applied...)
 }
 
+// Decisions 返回按时间排列的决策日志：每个动作为何执行、延迟或取消都可核对。
+func (c *Core) Decisions() []Decision {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]Decision(nil), c.decisions...)
+}
+
+// History 返回已接收的原始事件（设备上报与人工操作），可用于离线重放。
+func (c *Core) History() []Event {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]Event(nil), c.history...)
+}
+
+// Replay 用一段旧事件历史在空核上确定性重放，返回推进到 until 时刻得到的核。
+// 规则必须与历史录制时一致；事件按自身时间戳处理，不依赖实时时钟。
+// until 为零值时只推进到最后一个事件的时刻。
+func Replay(store Store, rules []Rule, history []Event, until time.Time) (*Core, []Decision, error) {
+	core, err := NewCore(store, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, rule := range rules {
+		if err := core.AddRule(rule); err != nil {
+			return nil, nil, err
+		}
+	}
+	ordered := make([]Event, 0, len(history))
+	for _, event := range history {
+		if !until.IsZero() && event.Time.After(until) {
+			continue
+		}
+		ordered = append(ordered, event)
+	}
+	sortEvents(ordered)
+	for _, event := range ordered {
+		// 先把时间推进到事件发生时刻，使到期动作在事件介入前落地，
+		// 与实时运行时“时钟推进 + 事件处理”交错的顺序保持一致。
+		if _, err := core.Tick(event.Time); err != nil {
+			return nil, nil, err
+		}
+		if _, err := core.Process(event); err != nil {
+			return nil, nil, err
+		}
+	}
+	last := until
+	if last.IsZero() && len(ordered) > 0 {
+		last = ordered[len(ordered)-1].Time
+	}
+	if !last.IsZero() {
+		if _, err := core.Tick(last); err != nil {
+			return nil, nil, err
+		}
+	}
+	return core, core.Decisions(), nil
+}
+
 func (c *Core) applyEventLocked(event Event, at time.Time) {
 	device := c.devices[event.DeviceID]
 	device.ID = event.DeviceID
@@ -237,16 +413,29 @@ func (c *Core) applyEventLocked(event Event, at time.Time) {
 	if event.Source != SourceManual {
 		return
 	}
+	// 人工操作立即取消同设备同属性的待执行自动化动作，
+	// 避免延迟动作在人工接管后落地。
 	for id, action := range c.pending {
 		if action.DeviceID == event.DeviceID && action.Name == event.Name {
+			deleted := c.pending[id]
 			delete(c.pending, id)
+			c.recordDecisionLocked(Decision{
+				At: at, Outcome: OutcomeCanceled, Reason: ReasonManualIntervention,
+				RuleID: deleted.RuleID, ActionID: deleted.ID,
+				DeviceID: deleted.DeviceID, Name: deleted.Name, Value: &deleted.Value,
+			})
 		}
 	}
+	// 对所有会控制该设备属性的规则建立人工覆盖。ManualTTL > 0 时覆盖
+	// 只在该期限内有效；ManualTTL == 0 时持续到条件重新变假并再次为真。
 	for id, rule := range c.rules {
 		if rule.Action.DeviceID == event.DeviceID && rule.Action.Name == event.Name {
 			runtime := c.runtime[id]
-			runtime.Blocked = true
-			runtime.Fired = false
+			runtime = ruleRuntime{Blocked: true, Satisfied: false, Fired: false}
+			if rule.ManualTTL > 0 {
+				until := at.Add(rule.ManualTTL)
+				runtime.BlockedUntil = &until
+			}
 			c.runtime[id] = runtime
 		}
 	}
@@ -276,6 +465,15 @@ func (c *Core) applyPendingLocked(action Action, at time.Time) {
 	device.Values[action.Name] = ValueState{Value: action.Value, LastSource: SourceAutomation}
 	c.devices[action.DeviceID] = device
 	c.applied = append(c.applied, ActionRecord{Action: action, At: at})
+	c.recordDecisionLocked(Decision{
+		At: at, Outcome: OutcomeExecuted, Reason: ReasonConditionHeld,
+		RuleID: action.RuleID, ActionID: action.ID,
+		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
+	})
+}
+
+func (c *Core) recordDecisionLocked(decision Decision) {
+	c.decisions = append(c.decisions, decision)
 }
 
 func (c *Core) snapshotLocked() Snapshot {
@@ -315,9 +513,12 @@ func (c *Core) saveLocked() error {
 		return nil
 	}
 	return c.store.Save(persistentState{
-		Devices: c.devices,
-		Rules:   c.runtime,
-		Actions: c.pending,
-		Seq:     c.seq,
+		Devices:   c.devices,
+		Rules:     c.runtime,
+		Actions:   c.pending,
+		Seq:       c.seq,
+		History:   c.history,
+		Applied:   c.applied,
+		Decisions: c.decisions,
 	})
 }
