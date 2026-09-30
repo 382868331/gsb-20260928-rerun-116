@@ -14,6 +14,7 @@ const (
 	ContactOpen  = "contact_open"
 	TemperatureC = "temperature_c"
 	PoweredOn    = "powered_on"
+	NightDark    = "night_dark"
 )
 
 type Event struct {
@@ -68,11 +69,13 @@ type SetStateAction struct {
 }
 
 type Rule struct {
-	ID          string
-	Description string
-	Condition   Condition
-	Duration    time.Duration
-	Action      SetStateAction
+	ID             string
+	Description    string
+	Condition      Condition
+	Duration       time.Duration
+	Action         SetStateAction
+	Priority       int
+	ManualOverride time.Duration
 }
 
 type Action struct {
@@ -81,10 +84,25 @@ type Action struct {
 	DeviceID   string    `json:"device_id"`
 	Name       string    `json:"name"`
 	Value      float64   `json:"value"`
+	CreatedAt  time.Time `json:"created_at"`
 	CompleteAt time.Time `json:"complete_at"`
 }
 
 type ActionRecord struct {
 	Action Action
 	At     time.Time
+}
+
+type DecisionStatus string
+
+const (
+	DecisionExecuted DecisionStatus = "executed"
+	DecisionCanceled DecisionStatus = "canceled"
+)
+
+type Decision struct {
+	Action Action         `json:"action"`
+	Status DecisionStatus `json:"status"`
+	Reason string         `json:"reason"`
+	At     time.Time      `json:"at"`
 }

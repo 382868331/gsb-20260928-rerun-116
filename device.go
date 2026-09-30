@@ -30,6 +30,14 @@ func (d VirtualDevice) Temperature(celsius float64, at time.Time) Event {
 	return d.Event(TemperatureC, celsius, at)
 }
 
+func (d VirtualDevice) Night(dark bool, at time.Time) Event {
+	value := 0.0
+	if dark {
+		value = 1
+	}
+	return d.Event(NightDark, value, at)
+}
+
 func ManualControl(deviceID, name string, value float64, at time.Time) Event {
 	return Event{
 		DeviceID: deviceID,
