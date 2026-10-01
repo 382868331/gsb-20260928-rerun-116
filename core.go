@@ -20,6 +20,7 @@ type persistentState struct {
 	Devices   map[string]DeviceState `json:"devices"`
 	Rules     map[string]ruleRuntime `json:"rules"`
 	Actions   map[string]Action      `json:"actions"`
+	Overrides map[string]Override    `json:"overrides,omitempty"`
 	Seq       uint64                 `json:"seq"`
 	History   []Event                `json:"history,omitempty"`
 	Applied   []ActionRecord         `json:"applied,omitempty"`
@@ -34,6 +35,7 @@ type Core struct {
 	devices   map[string]DeviceState
 	runtime   map[string]ruleRuntime
 	pending   map[string]Action
+	overrides map[string]Override
 	applied   []ActionRecord
 	history   []Event
 	decisions []Decision
@@ -45,12 +47,13 @@ func NewCore(store Store, now func() time.Time) (*Core, error) {
 		now = time.Now
 	}
 	core := &Core{
-		now:     now,
-		store:   store,
-		rules:   make(map[string]Rule),
-		devices: make(map[string]DeviceState),
-		runtime: make(map[string]ruleRuntime),
-		pending: make(map[string]Action),
+		now:       now,
+		store:     store,
+		rules:     make(map[string]Rule),
+		devices:   make(map[string]DeviceState),
+		runtime:   make(map[string]ruleRuntime),
+		pending:   make(map[string]Action),
+		overrides: make(map[string]Override),
 	}
 	if store == nil {
 		return core, nil
@@ -63,6 +66,7 @@ func NewCore(store Store, now func() time.Time) (*Core, error) {
 		core.devices = state.Devices
 		core.runtime = state.Rules
 		core.pending = state.Actions
+		core.overrides = state.Overrides
 		core.seq = state.Seq
 		core.applied = state.Applied
 		core.history = state.History
@@ -75,6 +79,9 @@ func NewCore(store Store, now func() time.Time) (*Core, error) {
 		}
 		if core.pending == nil {
 			core.pending = make(map[string]Action)
+		}
+		if core.overrides == nil {
+			core.overrides = make(map[string]Override)
 		}
 	}
 	return core, nil
@@ -119,6 +126,9 @@ func (c *Core) Tick(at time.Time) ([]Action, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// 把时钟推进也记入历史：重放仅在事件时刻推进时钟，
+	// 记录 Tick 后虚拟时间回放才能复现完全相同的裁决时点。
+	c.history = append(c.history, Event{Time: at, Tick: true})
 	applied := c.evaluateLocked(at)
 	if err := c.saveLocked(); err != nil {
 		return nil, err
@@ -134,6 +144,7 @@ func (c *Core) evaluateLocked(at time.Time) []Action {
 	var applied []Action
 	for pass := 0; pass < maxEvaluationPasses; pass++ {
 		changed := c.expireBlocksLocked(at)
+		changed = c.expireOverridesLocked(at) || changed
 		dueChanged := c.processDueLocked(at, &applied)
 		fireChanged := c.evaluateRulesLocked(at)
 		if !changed && !dueChanged && !fireChanged {
@@ -175,6 +186,30 @@ func (c *Core) processDueLocked(at time.Time, applied *[]Action) bool {
 		}
 		if c.isBlockedLocked(c.runtime[action.RuleID], at) {
 			c.cancelPendingLocked(action, at, ReasonRuleBlocked)
+			changed = true
+			continue
+		}
+		if override := c.overrideCoveringLocked(action.DeviceID, action.Name); override != nil {
+			c.cancelPendingWithOverrideLocked(action, at, ReasonRuleBlocked, override.ID)
+			changed = true
+			continue
+		}
+		if action.ExpiresAt != nil && at.After(*action.ExpiresAt) {
+			// 到点时刻已过太久（例如停机/重启跨越）：动作过时，
+			// 记录本应发生的时刻，但不补发。
+			delete(c.pending, action.ID)
+			c.recordDecisionLocked(Decision{
+				At: at, Outcome: OutcomeCanceled, Reason: ReasonStaleAction,
+				RuleID: action.RuleID, ActionID: action.ID,
+				DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
+				Detail: fmt.Sprintf("due at %s, expired at %s; not reissued",
+					action.CompleteAt.Format(time.RFC3339), action.ExpiresAt.Format(time.RFC3339)),
+			})
+			changed = true
+			continue
+		}
+		if c.snapshotLocked().Offline(action.DeviceID) {
+			c.cancelPendingLocked(action, at, ReasonDeviceOffline)
 			changed = true
 			continue
 		}
@@ -239,6 +274,9 @@ func (c *Core) evaluateRulesLocked(at time.Time) bool {
 		// TTL 覆盖期内条件即使仍为真也不能触发；TTL=0 的覆盖已在上面
 		// 借助“条件变假”解除。
 		if c.isBlockedLocked(runtime, at) {
+			continue
+		}
+		if c.overrideCoveringLocked(rule.Action.DeviceID, rule.Action.Name) != nil {
 			continue
 		}
 		if !runtime.Satisfied {
@@ -323,6 +361,16 @@ func (c *Core) cancelPendingLocked(action Action, at time.Time, reason Reason) {
 	})
 }
 
+func (c *Core) cancelPendingWithOverrideLocked(action Action, at time.Time, reason Reason, overrideID string) {
+	delete(c.pending, action.ID)
+	c.recordDecisionLocked(Decision{
+		At: at, Outcome: OutcomeCanceled, Reason: reason,
+		RuleID: action.RuleID, ActionID: action.ID,
+		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
+		OverrideID: overrideID,
+	})
+}
+
 func (c *Core) Snapshot() Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -377,11 +425,14 @@ func Replay(store Store, rules []Rule, history []Event, until time.Time) (*Core,
 	}
 	sortEvents(ordered)
 	for _, event := range ordered {
-		// 先把时间推进到事件发生时刻，使到期动作在事件介入前落地，
-		// 与实时运行时“时钟推进 + 事件处理”交错的顺序保持一致。
-		if _, err := core.Tick(event.Time); err != nil {
-			return nil, nil, err
+		if event.Tick {
+			if _, err := core.Tick(event.Time); err != nil {
+				return nil, nil, err
+			}
+			continue
 		}
+		// 时钟推进已由历史中的 Tick 条目精确复现；此处按与实时
+		// 运行相同的顺序直接处理事件（先应用事件，再评估裁决）。
 		if _, err := core.Process(event); err != nil {
 			return nil, nil, err
 		}
@@ -399,10 +450,21 @@ func Replay(store Store, rules []Rule, history []Event, until time.Time) (*Core,
 }
 
 func (c *Core) applyEventLocked(event Event, at time.Time) {
+	if event.Override != nil {
+		c.applyTakeoverLocked(*event.Override, at)
+		return
+	}
+	if event.RevokeID != "" {
+		c.applyRevokeLocked(event.RevokeID, at)
+		return
+	}
 	device := c.devices[event.DeviceID]
 	device.ID = event.DeviceID
 	if len(event.DeviceType) > 0 {
 		device.Types = append([]string(nil), event.DeviceType...)
+	}
+	if event.Room != "" {
+		device.Room = event.Room
 	}
 	if device.Values == nil {
 		device.Values = make(map[string]ValueState)
@@ -450,6 +512,10 @@ func (c *Core) enqueueLocked(rule Rule, at time.Time) Action {
 		Name:       rule.Action.Name,
 		Value:      rule.Action.Value,
 		CompleteAt: at.Add(rule.Action.After),
+	}
+	if rule.Action.ValidFor > 0 {
+		expiresAt := action.CompleteAt.Add(rule.Action.ValidFor)
+		action.ExpiresAt = &expiresAt
 	}
 	c.pending[action.ID] = action
 	return action
@@ -516,6 +582,7 @@ func (c *Core) saveLocked() error {
 		Devices:   c.devices,
 		Rules:     c.runtime,
 		Actions:   c.pending,
+		Overrides: c.overrides,
 		Seq:       c.seq,
 		History:   c.history,
 		Applied:   c.applied,

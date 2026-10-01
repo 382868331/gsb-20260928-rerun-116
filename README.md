@@ -90,6 +90,37 @@
 - ManualTTL > 0：覆盖从人工操作时刻起持续该时长，到期自动解除，
   规则从头开始观察条件。
 
+### 多层人工接管（Override 层）
+
+在单属性人工覆盖之上，核支持多层独立的人工接管，可任意叠加：
+
+	// 整层房间接管，10 分钟后自动解除
+	core.Takeover(automation.Override{ID: "party-mode",
+	    Scope: automation.OverrideScope{Room: "living"},
+	    ExpiresAt: &deadline}, at)
+	// 同房间某设备的临时例外（无限期，直到显式撤销）
+	core.Takeover(automation.Override{ID: "keep-lamp",
+	    Scope: automation.OverrideScope{DeviceID: "lamp"}}, at2)
+	core.RevokeOverride("keep-lamp", at3)
+
+- 作用范围按 房间 / 设备 / 设备属性 三级限定（OverrideScope），各层
+  建立时刻、到期时刻（ExpiresAt，空表示直到显式撤销）完全独立。
+- 建立一层时立即取消范围内所有挂起的自动化动作（manual_intervention，
+  决策带 OverrideID）；层有效期内罩住的规则不触发。
+- 某一层到期或被撤销时，只解除该层：仍被其他层罩住的目标保持人工控制，
+  不再被任何层罩住的规则**从头重新观察条件**——恢复的是当前仍有效的
+  控制关系，而不是一律回到最早的自动规则。
+- 接管层的建立 / 到期 / 撤销都写入决策日志（outcome=override，原因分别为
+  override_started / override_expired / override_revoked），并以事件形式
+  进入历史，重启恢复与离线重放都能复现。
+
+### 设备离线
+
+- 设备上报 online=0（VirtualDevice.Availability(false, at)）即视为离线：
+  离线期间其属性对条件不可见（持续条件因此中断计时）；
+  指向离线设备的延迟动作到点时取消并记录 device_offline，不会下发。
+- 设备恢复在线（online=1）后，人工接管层依然有效，规则按当前状态重新裁决。
+
 ### 互相冲突动作的裁决
 
 - 同一设备同一属性上目标值不同的待执行动作视为冲突。
@@ -105,6 +136,12 @@
   待执行动作及截止时刻、事件历史与决策日志都通过 FileStore 原子写持久化。
 - 重启后重新 NewCore 并注册同一套规则即可续跑；延迟动作按原始截止时刻生效，
   既不会提前也不会因重启被遗忘。
+- 重启跨越接管层到期时刻时，到期决策的 At 记录**本应到期的时刻**
+  （ExpiresAt），Detail 记录实际发现到期的评估时刻——日志因此区分
+  “停机期间应当发生的决策”与“恢复后实际执行的处理”。
+- 停机期间错过到点的延迟动作不会一律补发：SetStateAction.ValidFor 限定
+  到点后的有效窗口，落后超过该窗口的动作以 stale_action_expired 取消，
+  决策 Detail 记录原到点时刻与失效时刻，明确“该动作实际没有执行”。
 
 ### 防循环
 
@@ -118,6 +155,9 @@
 
 - 仅依赖事件自身时间戳，不依赖实时时钟；重放时随每个事件先推进时钟再处理事件。
 - 只重放 cutoff 之前的事件，可重放任意旧历史并得到与当时一致的决策序列。
+- 时钟推进（Tick）本身也作为事件进入历史，接管层的建立/撤销同样是历史事件；
+  因此重放在与实时运行完全相同的时间点上按相同顺序裁决，
+  决策日志逐条一致（见 TestReplayReproducesOverrideDecisions）。
 
 ## 条件组合
 
