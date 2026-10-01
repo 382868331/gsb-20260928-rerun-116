@@ -20,24 +20,30 @@ type persistentState struct {
 	Devices   map[string]DeviceState `json:"devices"`
 	Rules     map[string]ruleRuntime `json:"rules"`
 	Actions   map[string]Action      `json:"actions"`
+	Takeovers map[string]Takeover    `json:"takeovers,omitempty"`
 	Seq       uint64                 `json:"seq"`
-	History   []Event                `json:"history,omitempty"`
-	Applied   []ActionRecord         `json:"applied,omitempty"`
-	Decisions []Decision             `json:"decisions,omitempty"`
+	// TakeoverSeq 与动作序号分开计数：接管层 ID 不占用动作序号，
+	// 保证重放（接管 ID 已从事件中恢复）与实时运行产生一致的动作 ID。
+	TakeoverSeq uint64         `json:"takeover_seq,omitempty"`
+	History     []Event        `json:"history,omitempty"`
+	Applied     []ActionRecord `json:"applied,omitempty"`
+	Decisions   []Decision     `json:"decisions,omitempty"`
 }
 
 type Core struct {
-	mu        sync.Mutex
-	now       func() time.Time
-	store     Store
-	rules     map[string]Rule
-	devices   map[string]DeviceState
-	runtime   map[string]ruleRuntime
-	pending   map[string]Action
-	applied   []ActionRecord
-	history   []Event
-	decisions []Decision
-	seq       uint64
+	mu          sync.Mutex
+	now         func() time.Time
+	store       Store
+	rules       map[string]Rule
+	devices     map[string]DeviceState
+	runtime     map[string]ruleRuntime
+	pending     map[string]Action
+	takeovers   map[string]Takeover
+	takeoverSeq uint64
+	applied     []ActionRecord
+	history     []Event
+	decisions   []Decision
+	seq         uint64
 }
 
 func NewCore(store Store, now func() time.Time) (*Core, error) {
@@ -45,12 +51,13 @@ func NewCore(store Store, now func() time.Time) (*Core, error) {
 		now = time.Now
 	}
 	core := &Core{
-		now:     now,
-		store:   store,
-		rules:   make(map[string]Rule),
-		devices: make(map[string]DeviceState),
-		runtime: make(map[string]ruleRuntime),
-		pending: make(map[string]Action),
+		now:       now,
+		store:     store,
+		rules:     make(map[string]Rule),
+		devices:   make(map[string]DeviceState),
+		runtime:   make(map[string]ruleRuntime),
+		pending:   make(map[string]Action),
+		takeovers: make(map[string]Takeover),
 	}
 	if store == nil {
 		return core, nil
@@ -63,7 +70,11 @@ func NewCore(store Store, now func() time.Time) (*Core, error) {
 		core.devices = state.Devices
 		core.runtime = state.Rules
 		core.pending = state.Actions
+		if state.Takeovers != nil {
+			core.takeovers = state.Takeovers
+		}
 		core.seq = state.Seq
+		core.takeoverSeq = state.TakeoverSeq
 		core.applied = state.Applied
 		core.history = state.History
 		core.decisions = state.Decisions
@@ -134,6 +145,7 @@ func (c *Core) evaluateLocked(at time.Time) []Action {
 	var applied []Action
 	for pass := 0; pass < maxEvaluationPasses; pass++ {
 		changed := c.expireBlocksLocked(at)
+		changed = c.expireTakeoversLocked(at) || changed
 		dueChanged := c.processDueLocked(at, &applied)
 		fireChanged := c.evaluateRulesLocked(at)
 		if !changed && !dueChanged && !fireChanged {
@@ -173,13 +185,20 @@ func (c *Core) processDueLocked(at time.Time, applied *[]Action) bool {
 			changed = true
 			continue
 		}
-		if c.isBlockedLocked(c.runtime[action.RuleID], at) {
+		if c.isRuleBlockedLocked(rule, at) {
 			c.cancelPendingLocked(action, at, ReasonRuleBlocked)
 			changed = true
 			continue
 		}
 		if !rule.Condition.Evaluate(c.snapshotLocked()) {
 			c.cancelPendingLocked(action, at, ReasonConditionFalse)
+			changed = true
+			continue
+		}
+		// 目标设备离线时动作无法落地：取消并记录原因，
+		// 历史因此能解释“为什么最终没有执行该动作”。
+		if online, ok := c.snapshotLocked().Value(action.DeviceID, Online); ok && online == 0 {
+			c.cancelPendingLocked(action, at, ReasonDeviceOffline)
 			changed = true
 			continue
 		}
@@ -238,7 +257,7 @@ func (c *Core) evaluateRulesLocked(at time.Time) bool {
 		}
 		// TTL 覆盖期内条件即使仍为真也不能触发；TTL=0 的覆盖已在上面
 		// 借助“条件变假”解除。
-		if c.isBlockedLocked(runtime, at) {
+		if c.isRuleBlockedLocked(rule, at) {
 			continue
 		}
 		if !runtime.Satisfied {
@@ -316,11 +335,17 @@ func (c *Core) isBlockedLocked(runtime ruleRuntime, at time.Time) bool {
 
 func (c *Core) cancelPendingLocked(action Action, at time.Time, reason Reason) {
 	delete(c.pending, action.ID)
-	c.recordDecisionLocked(Decision{
+	decision := Decision{
 		At: at, Outcome: OutcomeCanceled, Reason: reason,
 		RuleID: action.RuleID, ActionID: action.ID,
 		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
-	})
+	}
+	if action.CompleteAt.Before(at) {
+		// 动作本应在 CompleteAt 处理，但进程当时已停止（或时钟未推进）：
+		// 记录应发生时刻，绝不按旧时刻补发。
+		decision.DueAt = &action.CompleteAt
+	}
+	c.recordDecisionLocked(decision)
 }
 
 func (c *Core) Snapshot() Snapshot {
@@ -399,10 +424,22 @@ func Replay(store Store, rules []Rule, history []Event, until time.Time) (*Core,
 }
 
 func (c *Core) applyEventLocked(event Event, at time.Time) {
+	if event.Takeover != nil {
+		switch event.Name {
+		case EventTakeoverBegin:
+			c.beginTakeoverLocked(*event.Takeover, at)
+		case EventTakeoverEnd:
+			c.endTakeoverLocked(event.Takeover.ID, at, ReasonTakeoverReleased)
+		}
+		return
+	}
 	device := c.devices[event.DeviceID]
 	device.ID = event.DeviceID
 	if len(event.DeviceType) > 0 {
 		device.Types = append([]string(nil), event.DeviceType...)
+	}
+	if event.Room != "" {
+		device.Room = event.Room
 	}
 	if device.Values == nil {
 		device.Values = make(map[string]ValueState)
@@ -465,11 +502,15 @@ func (c *Core) applyPendingLocked(action Action, at time.Time) {
 	device.Values[action.Name] = ValueState{Value: action.Value, LastSource: SourceAutomation}
 	c.devices[action.DeviceID] = device
 	c.applied = append(c.applied, ActionRecord{Action: action, At: at})
-	c.recordDecisionLocked(Decision{
+	decision := Decision{
 		At: at, Outcome: OutcomeExecuted, Reason: ReasonConditionHeld,
 		RuleID: action.RuleID, ActionID: action.ID,
 		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
-	})
+	}
+	if action.CompleteAt.Before(at) {
+		decision.DueAt = &action.CompleteAt
+	}
+	c.recordDecisionLocked(decision)
 }
 
 func (c *Core) recordDecisionLocked(decision Decision) {
@@ -513,12 +554,14 @@ func (c *Core) saveLocked() error {
 		return nil
 	}
 	return c.store.Save(persistentState{
-		Devices:   c.devices,
-		Rules:     c.runtime,
-		Actions:   c.pending,
-		Seq:       c.seq,
-		History:   c.history,
-		Applied:   c.applied,
-		Decisions: c.decisions,
+		Devices:     c.devices,
+		Rules:       c.runtime,
+		Actions:     c.pending,
+		Takeovers:   c.takeovers,
+		Seq:         c.seq,
+		TakeoverSeq: c.takeoverSeq,
+		History:     c.history,
+		Applied:     c.applied,
+		Decisions:   c.decisions,
 	})
 }
