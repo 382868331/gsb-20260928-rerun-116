@@ -192,6 +192,9 @@ const (
 	ReasonGroupCanceled  Reason = "group_canceled"
 	ReasonStepConfirmed  Reason = "step_confirmed"
 	ReasonStepUncertain  Reason = "step_uncertain"
+	// ReasonStepWaiting 表示步骤进入等待设备确认：目标值已存在但只是
+	// 自动化自己写入的，不能当作设备回报，等待期内不重复下发动作。
+	ReasonStepWaiting Reason = "step_waiting_confirm"
 	// ReasonStepSkipped 表示步骤目标在当前观察下已经满足，无需再执行。
 	ReasonStepSkipped Reason = "step_already_satisfied"
 )

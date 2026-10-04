@@ -120,16 +120,35 @@ func (c *Core) advanceGroupLocked(rule Rule, at time.Time) bool {
 			return true
 		}
 		if value, ok := snapshot.Value(step.Action.DeviceID, step.Action.Name); ok && value == step.Action.Value {
-			// 当前观察下目标已满足：不补发动作，直接记为已确认。
-			gr.Steps[gr.StepIndex].Status = StepSkipped
+			lastSource := snapshot.Devices[step.Action.DeviceID].Values[step.Action.Name].LastSource
+			if lastSource == SourceDevice || step.ConfirmWithin == 0 {
+				// 当前观察下目标已由设备自身回报满足（或该步不要求设备确认）：
+				// 不补发动作，直接记为已确认。
+				gr.Steps[gr.StepIndex].Status = StepSkipped
+				c.recordDecisionLocked(Decision{
+					At: at, Outcome: OutcomeGroup, Reason: ReasonStepSkipped,
+					RuleID: rule.ID, RunID: gr.RunID, StepID: step.ID,
+					DeviceID: step.Action.DeviceID, Name: step.Action.Name, Value: &step.Action.Value,
+					Detail: "goal already satisfied; action not reissued",
+				})
+				gr.StepIndex++
+				continue
+			}
+			// 目标值只是自动化自己写入、设备尚未回报：自动下发值不能替代
+			// 设备确认。不重复下发已有动作，而是进入等待确认（期限随运行
+			// 持久化，重启后继续核对）；窗口内未确认只能记为不确定。
+			deadline := at.Add(step.ConfirmWithin)
+			gr.ConfirmDeadline = &deadline
+			gr.Steps[gr.StepIndex].Status = StepWaitingConfirm
 			c.recordDecisionLocked(Decision{
-				At: at, Outcome: OutcomeGroup, Reason: ReasonStepSkipped,
+				At: at, Outcome: OutcomeGroup, Reason: ReasonStepWaiting,
 				RuleID: rule.ID, RunID: gr.RunID, StepID: step.ID,
 				DeviceID: step.Action.DeviceID, Name: step.Action.Name, Value: &step.Action.Value,
-				Detail: "goal already satisfied; action not reissued",
+				Detail: "target value present but not device-reported; waiting for confirmation, action not reissued",
 			})
-			gr.StepIndex++
-			continue
+			runtime.Group = gr
+			c.runtime[rule.ID] = runtime
+			return true
 		}
 		action := c.enqueueStepLocked(rule, step, gr, at)
 		gr.PendingActionID = action.ID
@@ -202,6 +221,12 @@ func (c *Core) evaluateGroupsLocked(at time.Time) bool {
 			// 后续步骤不再执行，绝不把整组当作完成。
 			deadline := *gr.ConfirmDeadline
 			gr.ConfirmDeadline = nil
+			c.recordDecisionLocked(Decision{
+				At: at, Outcome: OutcomeGroup, Reason: ReasonStepUncertain,
+				RuleID: rule.ID, RunID: gr.RunID, StepID: step.ID,
+				Detail: fmt.Sprintf("unconfirmed by %s; discovered at %s",
+					deadline.Format(time.RFC3339), at.Format(time.RFC3339)),
+			})
 			c.finishGroupLocked(rule, at, ReasonStepUncertain, "",
 				fmt.Sprintf("step %s unconfirmed by %s; uncertain at %s",
 					step.ID, deadline.Format(time.RFC3339), at.Format(time.RFC3339)))

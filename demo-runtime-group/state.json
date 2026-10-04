@@ -1,0 +1,985 @@
+{
+  "devices": {
+    "ac": {
+      "id": "ac",
+      "room": "bedroom",
+      "values": {
+        "powered_on": {
+          "value": 1,
+          "last_source": "device"
+        }
+      }
+    },
+    "bedroom": {
+      "id": "bedroom",
+      "room": "bedroom",
+      "values": {
+        "occupied": {
+          "value": 1,
+          "last_source": "device"
+        }
+      }
+    },
+    "humidifier": {
+      "id": "humidifier",
+      "room": "bedroom",
+      "values": {
+        "online": {
+          "value": 0,
+          "last_source": "device"
+        }
+      }
+    },
+    "indicator": {
+      "id": "indicator",
+      "values": {
+        "powered_on": {
+          "value": 1,
+          "last_source": "automation"
+        }
+      }
+    },
+    "mode": {
+      "id": "mode",
+      "values": {
+        "eco": {
+          "value": 0,
+          "last_source": "device"
+        }
+      }
+    },
+    "thermostat": {
+      "id": "thermostat",
+      "types": [
+        "temperature-sensor"
+      ],
+      "values": {
+        "temperature_c": {
+          "value": 28,
+          "last_source": "device"
+        }
+      }
+    },
+    "window": {
+      "id": "window",
+      "room": "bedroom",
+      "values": {
+        "contact_open": {
+          "value": 0,
+          "last_source": "device"
+        }
+      }
+    }
+  },
+  "rules": {
+    "bedtime-ac": {
+      "satisfied": true,
+      "since": "2026-09-30T21:05:00Z",
+      "fired": true,
+      "blocked": false,
+      "group": {
+        "run_id": "bedtime-ac-run-12",
+        "step_index": 2,
+        "steps": [
+          {
+            "step_id": "confirm-window",
+            "status": "confirmed"
+          },
+          {
+            "step_id": "ac-on",
+            "status": "skipped"
+          }
+        ],
+        "done": true
+      }
+    },
+    "eco-off": {
+      "satisfied": false,
+      "since": "0001-01-01T00:00:00Z",
+      "fired": false,
+      "blocked": false
+    },
+    "indicator-on": {
+      "satisfied": false,
+      "since": "0001-01-01T00:00:00Z",
+      "fired": false,
+      "blocked": false
+    },
+    "night-humidify": {
+      "satisfied": true,
+      "since": "2026-09-30T21:12:00Z",
+      "fired": false,
+      "blocked": false,
+      "group": {
+        "run_id": "night-humidify-run-16",
+        "step_index": 0,
+        "steps": [
+          {
+            "step_id": "humidifier-on",
+            "status": "canceled"
+          }
+        ],
+        "done": true
+      }
+    }
+  },
+  "actions": {},
+  "seq": 17,
+  "history": [
+    {
+      "device_id": "thermostat",
+      "device_type": [
+        "temperature-sensor"
+      ],
+      "name": "temperature_c",
+      "value": 28,
+      "source": "device",
+      "time": "2026-09-30T21:00:00Z"
+    },
+    {
+      "device_id": "bedroom",
+      "room": "bedroom",
+      "name": "occupied",
+      "value": 1,
+      "source": "device",
+      "time": "2026-09-30T21:00:00Z"
+    },
+    {
+      "device_id": "window",
+      "room": "bedroom",
+      "name": "contact_open",
+      "value": 1,
+      "source": "device",
+      "time": "2026-09-30T21:00:00Z"
+    },
+    {
+      "device_id": "humidifier",
+      "room": "bedroom",
+      "name": "online",
+      "value": 1,
+      "source": "device",
+      "time": "2026-09-30T21:00:00Z"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:02:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "",
+      "room": "bedroom",
+      "name": "",
+      "value": 0,
+      "source": "manual",
+      "time": "2026-09-30T21:03:00Z",
+      "override": {
+        "id": "guest",
+        "scope": {
+          "room": "bedroom"
+        },
+        "reason": "客人暂住",
+        "started_at": "0001-01-01T00:00:00Z"
+      }
+    },
+    {
+      "device_id": "window",
+      "room": "bedroom",
+      "name": "contact_open",
+      "value": 0,
+      "source": "device",
+      "time": "2026-09-30T21:04:00Z"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:04:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "manual",
+      "time": "2026-09-30T21:05:00Z",
+      "revoke_id": "guest"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:05:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:07:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "humidifier",
+      "room": "bedroom",
+      "name": "online",
+      "value": 0,
+      "source": "device",
+      "time": "2026-09-30T21:07:00Z"
+    },
+    {
+      "device_id": "mode",
+      "name": "eco",
+      "value": 1,
+      "source": "device",
+      "time": "2026-09-30T21:07:30Z"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:08:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:09:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "mode",
+      "name": "eco",
+      "value": 0,
+      "source": "device",
+      "time": "2026-09-30T21:10:00Z"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:10:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:12:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "ac",
+      "room": "bedroom",
+      "name": "powered_on",
+      "value": 1,
+      "source": "device",
+      "time": "2026-09-30T21:12:30Z"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:13:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "thermostat",
+      "device_type": [
+        "temperature-sensor"
+      ],
+      "name": "temperature_c",
+      "value": 28,
+      "source": "device",
+      "time": "2026-09-30T21:00:00Z"
+    },
+    {
+      "device_id": "bedroom",
+      "room": "bedroom",
+      "name": "occupied",
+      "value": 1,
+      "source": "device",
+      "time": "2026-09-30T21:00:00Z"
+    },
+    {
+      "device_id": "window",
+      "room": "bedroom",
+      "name": "contact_open",
+      "value": 1,
+      "source": "device",
+      "time": "2026-09-30T21:00:00Z"
+    },
+    {
+      "device_id": "humidifier",
+      "room": "bedroom",
+      "name": "online",
+      "value": 1,
+      "source": "device",
+      "time": "2026-09-30T21:00:00Z"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:02:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "",
+      "room": "bedroom",
+      "name": "",
+      "value": 0,
+      "source": "manual",
+      "time": "2026-09-30T21:03:00Z",
+      "override": {
+        "id": "guest",
+        "scope": {
+          "room": "bedroom"
+        },
+        "reason": "客人暂住",
+        "started_at": "0001-01-01T00:00:00Z"
+      }
+    },
+    {
+      "device_id": "window",
+      "room": "bedroom",
+      "name": "contact_open",
+      "value": 0,
+      "source": "device",
+      "time": "2026-09-30T21:04:00Z"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:04:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "manual",
+      "time": "2026-09-30T21:05:00Z",
+      "revoke_id": "guest"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:05:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:07:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "humidifier",
+      "room": "bedroom",
+      "name": "online",
+      "value": 0,
+      "source": "device",
+      "time": "2026-09-30T21:07:00Z"
+    },
+    {
+      "device_id": "mode",
+      "name": "eco",
+      "value": 1,
+      "source": "device",
+      "time": "2026-09-30T21:07:30Z"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:08:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:09:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "mode",
+      "name": "eco",
+      "value": 0,
+      "source": "device",
+      "time": "2026-09-30T21:10:00Z"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:10:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:12:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "ac",
+      "room": "bedroom",
+      "name": "powered_on",
+      "value": 1,
+      "source": "device",
+      "time": "2026-09-30T21:12:30Z"
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:13:00Z",
+      "tick": true
+    },
+    {
+      "device_id": "",
+      "name": "",
+      "value": 0,
+      "source": "",
+      "time": "2026-09-30T21:13:00Z",
+      "tick": true
+    }
+  ],
+  "applied": [
+    {
+      "Action": {
+        "id": "indicator-on-7",
+        "rule_id": "indicator-on",
+        "device_id": "indicator",
+        "name": "powered_on",
+        "value": 1,
+        "complete_at": "2026-09-30T21:07:30Z",
+        "run_id": "indicator-on-run-6",
+        "step_id": "lamp"
+      },
+      "At": "2026-09-30T21:07:30Z"
+    },
+    {
+      "Action": {
+        "id": "eco-off-5",
+        "rule_id": "eco-off",
+        "device_id": "ac",
+        "name": "powered_on",
+        "value": 0,
+        "complete_at": "2026-09-30T21:08:30Z",
+        "run_id": "eco-off-run-4",
+        "step_id": "ac-off"
+      },
+      "At": "2026-09-30T21:09:00Z"
+    },
+    {
+      "Action": {
+        "id": "bedtime-ac-9",
+        "rule_id": "bedtime-ac",
+        "device_id": "ac",
+        "name": "powered_on",
+        "value": 1,
+        "complete_at": "2026-09-30T21:11:00Z",
+        "run_id": "bedtime-ac-run-8",
+        "step_id": "ac-on"
+      },
+      "At": "2026-09-30T21:12:00Z"
+    },
+    {
+      "Action": {
+        "id": "eco-off-14",
+        "rule_id": "eco-off",
+        "device_id": "ac",
+        "name": "powered_on",
+        "value": 0,
+        "complete_at": "2026-09-30T21:08:30Z",
+        "run_id": "eco-off-run-13",
+        "step_id": "ac-off"
+      },
+      "At": "2026-09-30T21:09:00Z"
+    }
+  ],
+  "decisions": [
+    {
+      "at": "2026-09-30T21:02:00Z",
+      "outcome": "group",
+      "reason": "group_started",
+      "rule_id": "bedtime-ac",
+      "run_id": "bedtime-ac-run-1"
+    },
+    {
+      "at": "2026-09-30T21:03:00Z",
+      "outcome": "override",
+      "reason": "override_started",
+      "rule_id": "",
+      "override_id": "guest",
+      "detail": "客人暂住"
+    },
+    {
+      "at": "2026-09-30T21:03:00Z",
+      "outcome": "group",
+      "reason": "group_canceled",
+      "rule_id": "bedtime-ac",
+      "override_id": "guest",
+      "run_id": "bedtime-ac-run-1",
+      "step_id": "confirm-window",
+      "detail": "manual_intervention: remaining steps covered by override guest"
+    },
+    {
+      "at": "2026-09-30T21:05:00Z",
+      "outcome": "override",
+      "reason": "override_revoked",
+      "rule_id": "",
+      "override_id": "guest"
+    },
+    {
+      "at": "2026-09-30T21:07:00Z",
+      "outcome": "group",
+      "reason": "group_started",
+      "rule_id": "bedtime-ac",
+      "run_id": "bedtime-ac-run-2"
+    },
+    {
+      "at": "2026-09-30T21:07:00Z",
+      "outcome": "group",
+      "reason": "step_confirmed",
+      "rule_id": "bedtime-ac",
+      "device_id": "window",
+      "name": "contact_open",
+      "value": 0,
+      "run_id": "bedtime-ac-run-2",
+      "step_id": "confirm-window",
+      "detail": "verified from current observation"
+    },
+    {
+      "at": "2026-09-30T21:07:00Z",
+      "outcome": "scheduled",
+      "reason": "condition_held",
+      "rule_id": "bedtime-ac",
+      "action_id": "bedtime-ac-3",
+      "device_id": "ac",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "bedtime-ac-run-2",
+      "step_id": "ac-on"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "group",
+      "reason": "group_started",
+      "rule_id": "eco-off",
+      "run_id": "eco-off-run-4"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "scheduled",
+      "reason": "condition_held",
+      "rule_id": "eco-off",
+      "action_id": "eco-off-5",
+      "device_id": "ac",
+      "name": "powered_on",
+      "value": 0,
+      "run_id": "eco-off-run-4",
+      "step_id": "ac-off"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "group",
+      "reason": "group_started",
+      "rule_id": "indicator-on",
+      "run_id": "indicator-on-run-6"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "scheduled",
+      "reason": "condition_held",
+      "rule_id": "indicator-on",
+      "action_id": "indicator-on-7",
+      "device_id": "indicator",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "indicator-on-run-6",
+      "step_id": "lamp"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "executed",
+      "reason": "condition_held",
+      "rule_id": "indicator-on",
+      "action_id": "indicator-on-7",
+      "device_id": "indicator",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "indicator-on-run-6",
+      "step_id": "lamp"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "group",
+      "reason": "step_confirmed",
+      "rule_id": "indicator-on",
+      "device_id": "indicator",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "indicator-on-run-6",
+      "step_id": "lamp"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "group",
+      "reason": "group_completed",
+      "rule_id": "indicator-on",
+      "run_id": "indicator-on-run-6",
+      "detail": "all steps confirmed"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "canceled",
+      "reason": "superseded_by_higher_priority",
+      "rule_id": "bedtime-ac",
+      "action_id": "bedtime-ac-3",
+      "device_id": "ac",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "bedtime-ac-run-2",
+      "step_id": "ac-on",
+      "detail": "winner eco-off-5 (rule eco-off, priority 9) over rule bedtime-ac (priority 5)"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "group",
+      "reason": "group_canceled",
+      "rule_id": "bedtime-ac",
+      "run_id": "bedtime-ac-run-2",
+      "step_id": "ac-on",
+      "detail": "superseded_by_higher_priority: pending action bedtime-ac-3 canceled: superseded_by_higher_priority"
+    },
+    {
+      "at": "2026-09-30T21:09:00Z",
+      "outcome": "executed",
+      "reason": "condition_held",
+      "rule_id": "eco-off",
+      "action_id": "eco-off-5",
+      "device_id": "ac",
+      "name": "powered_on",
+      "value": 0,
+      "run_id": "eco-off-run-4",
+      "step_id": "ac-off"
+    },
+    {
+      "at": "2026-09-30T21:09:00Z",
+      "outcome": "group",
+      "reason": "step_confirmed",
+      "rule_id": "eco-off",
+      "device_id": "ac",
+      "name": "powered_on",
+      "value": 0,
+      "run_id": "eco-off-run-4",
+      "step_id": "ac-off"
+    },
+    {
+      "at": "2026-09-30T21:09:00Z",
+      "outcome": "group",
+      "reason": "group_completed",
+      "rule_id": "eco-off",
+      "run_id": "eco-off-run-4",
+      "detail": "all steps confirmed"
+    },
+    {
+      "at": "2026-09-30T21:10:00Z",
+      "outcome": "group",
+      "reason": "group_started",
+      "rule_id": "bedtime-ac",
+      "run_id": "bedtime-ac-run-8"
+    },
+    {
+      "at": "2026-09-30T21:10:00Z",
+      "outcome": "group",
+      "reason": "step_confirmed",
+      "rule_id": "bedtime-ac",
+      "device_id": "window",
+      "name": "contact_open",
+      "value": 0,
+      "run_id": "bedtime-ac-run-8",
+      "step_id": "confirm-window",
+      "detail": "verified from current observation"
+    },
+    {
+      "at": "2026-09-30T21:10:00Z",
+      "outcome": "scheduled",
+      "reason": "condition_held",
+      "rule_id": "bedtime-ac",
+      "action_id": "bedtime-ac-9",
+      "device_id": "ac",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "bedtime-ac-run-8",
+      "step_id": "ac-on"
+    },
+    {
+      "at": "2026-09-30T21:12:00Z",
+      "outcome": "executed",
+      "reason": "condition_held",
+      "rule_id": "bedtime-ac",
+      "action_id": "bedtime-ac-9",
+      "device_id": "ac",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "bedtime-ac-run-8",
+      "step_id": "ac-on"
+    },
+    {
+      "at": "2026-09-30T21:12:00Z",
+      "outcome": "group",
+      "reason": "group_started",
+      "rule_id": "night-humidify",
+      "run_id": "night-humidify-run-10"
+    },
+    {
+      "at": "2026-09-30T21:12:00Z",
+      "outcome": "scheduled",
+      "reason": "condition_held",
+      "rule_id": "night-humidify",
+      "action_id": "night-humidify-11",
+      "device_id": "humidifier",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "night-humidify-run-10",
+      "step_id": "humidifier-on"
+    },
+    {
+      "at": "2026-09-30T21:12:00Z",
+      "outcome": "canceled",
+      "reason": "device_offline",
+      "rule_id": "night-humidify",
+      "action_id": "night-humidify-11",
+      "device_id": "humidifier",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "night-humidify-run-10",
+      "step_id": "humidifier-on"
+    },
+    {
+      "at": "2026-09-30T21:12:00Z",
+      "outcome": "group",
+      "reason": "group_canceled",
+      "rule_id": "night-humidify",
+      "run_id": "night-humidify-run-10",
+      "step_id": "humidifier-on",
+      "detail": "device_offline: pending action night-humidify-11 canceled: device_offline"
+    },
+    {
+      "at": "2026-09-30T21:12:30Z",
+      "outcome": "group",
+      "reason": "step_confirmed",
+      "rule_id": "bedtime-ac",
+      "run_id": "bedtime-ac-run-8",
+      "step_id": "ac-on"
+    },
+    {
+      "at": "2026-09-30T21:12:30Z",
+      "outcome": "group",
+      "reason": "group_completed",
+      "rule_id": "bedtime-ac",
+      "run_id": "bedtime-ac-run-8",
+      "detail": "all steps confirmed"
+    },
+    {
+      "at": "2026-09-30T21:03:00Z",
+      "outcome": "override",
+      "reason": "override_started",
+      "rule_id": "",
+      "override_id": "guest",
+      "detail": "客人暂住"
+    },
+    {
+      "at": "2026-09-30T21:05:00Z",
+      "outcome": "override",
+      "reason": "override_revoked",
+      "rule_id": "",
+      "override_id": "guest"
+    },
+    {
+      "at": "2026-09-30T21:07:00Z",
+      "outcome": "group",
+      "reason": "group_started",
+      "rule_id": "bedtime-ac",
+      "run_id": "bedtime-ac-run-12"
+    },
+    {
+      "at": "2026-09-30T21:07:00Z",
+      "outcome": "group",
+      "reason": "step_confirmed",
+      "rule_id": "bedtime-ac",
+      "device_id": "window",
+      "name": "contact_open",
+      "value": 0,
+      "run_id": "bedtime-ac-run-12",
+      "step_id": "confirm-window",
+      "detail": "verified from current observation"
+    },
+    {
+      "at": "2026-09-30T21:07:00Z",
+      "outcome": "group",
+      "reason": "step_already_satisfied",
+      "rule_id": "bedtime-ac",
+      "device_id": "ac",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "bedtime-ac-run-12",
+      "step_id": "ac-on",
+      "detail": "goal already satisfied; action not reissued"
+    },
+    {
+      "at": "2026-09-30T21:07:00Z",
+      "outcome": "group",
+      "reason": "group_completed",
+      "rule_id": "bedtime-ac",
+      "run_id": "bedtime-ac-run-12",
+      "detail": "all steps confirmed"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "group",
+      "reason": "group_started",
+      "rule_id": "eco-off",
+      "run_id": "eco-off-run-13"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "scheduled",
+      "reason": "condition_held",
+      "rule_id": "eco-off",
+      "action_id": "eco-off-14",
+      "device_id": "ac",
+      "name": "powered_on",
+      "value": 0,
+      "run_id": "eco-off-run-13",
+      "step_id": "ac-off"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "group",
+      "reason": "group_started",
+      "rule_id": "indicator-on",
+      "run_id": "indicator-on-run-15"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "group",
+      "reason": "step_already_satisfied",
+      "rule_id": "indicator-on",
+      "device_id": "indicator",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "indicator-on-run-15",
+      "step_id": "lamp",
+      "detail": "goal already satisfied; action not reissued"
+    },
+    {
+      "at": "2026-09-30T21:07:30Z",
+      "outcome": "group",
+      "reason": "group_completed",
+      "rule_id": "indicator-on",
+      "run_id": "indicator-on-run-15",
+      "detail": "all steps confirmed"
+    },
+    {
+      "at": "2026-09-30T21:09:00Z",
+      "outcome": "executed",
+      "reason": "condition_held",
+      "rule_id": "eco-off",
+      "action_id": "eco-off-14",
+      "device_id": "ac",
+      "name": "powered_on",
+      "value": 0,
+      "run_id": "eco-off-run-13",
+      "step_id": "ac-off"
+    },
+    {
+      "at": "2026-09-30T21:09:00Z",
+      "outcome": "group",
+      "reason": "step_confirmed",
+      "rule_id": "eco-off",
+      "device_id": "ac",
+      "name": "powered_on",
+      "value": 0,
+      "run_id": "eco-off-run-13",
+      "step_id": "ac-off"
+    },
+    {
+      "at": "2026-09-30T21:09:00Z",
+      "outcome": "group",
+      "reason": "group_completed",
+      "rule_id": "eco-off",
+      "run_id": "eco-off-run-13",
+      "detail": "all steps confirmed"
+    },
+    {
+      "at": "2026-09-30T21:12:00Z",
+      "outcome": "group",
+      "reason": "group_started",
+      "rule_id": "night-humidify",
+      "run_id": "night-humidify-run-16"
+    },
+    {
+      "at": "2026-09-30T21:12:00Z",
+      "outcome": "scheduled",
+      "reason": "condition_held",
+      "rule_id": "night-humidify",
+      "action_id": "night-humidify-17",
+      "device_id": "humidifier",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "night-humidify-run-16",
+      "step_id": "humidifier-on"
+    },
+    {
+      "at": "2026-09-30T21:12:00Z",
+      "outcome": "canceled",
+      "reason": "device_offline",
+      "rule_id": "night-humidify",
+      "action_id": "night-humidify-17",
+      "device_id": "humidifier",
+      "name": "powered_on",
+      "value": 1,
+      "run_id": "night-humidify-run-16",
+      "step_id": "humidifier-on"
+    },
+    {
+      "at": "2026-09-30T21:12:00Z",
+      "outcome": "group",
+      "reason": "group_canceled",
+      "rule_id": "night-humidify",
+      "run_id": "night-humidify-run-16",
+      "step_id": "humidifier-on",
+      "detail": "device_offline: pending action night-humidify-17 canceled: device_offline"
+    }
+  ]
+}

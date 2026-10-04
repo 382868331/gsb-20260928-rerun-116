@@ -301,3 +301,134 @@ func TestGroupOfflineDeviceUncertain(t *testing.T) {
 		t.Fatal("ac action must not be issued after uncertain verification")
 	}
 }
+
+func unconfirmedACRule() Rule {
+	return Rule{
+		ID:        "unconfirmed-ac",
+		Priority:  5,
+		Condition: DeviceProperty{DeviceID: "sensor", Name: "x", Operator: OpEq, Value: 1},
+		Duration:  time.Minute,
+		Steps: []Step{
+			{ID: "ac-on", Action: &SetStateAction{
+				DeviceID: "ac", Name: PoweredOn, Value: 1, After: time.Minute,
+			}, ConfirmWithin: 3 * time.Minute},
+			{ID: "lamp-on", Action: &SetStateAction{
+				DeviceID: "lamp", Name: PoweredOn, Value: 1,
+			}},
+		},
+	}
+}
+
+func countApplied(core *Core, stepID string) int {
+	count := 0
+	for _, record := range core.AppliedActions() {
+		if record.Action.StepID == stepID {
+			count++
+		}
+	}
+	return count
+}
+
+// 等待确认时重启：等待状态与期限保留；设备迟到确认后整组才完成；
+// 再次重启不会重复执行已落地的动作。
+func TestGroupRestartLateConfirmDoesNotReexecute(t *testing.T) {
+	now := time.Unix(9000, 0)
+	store := FileStore{Path: filepath.Join(t.TempDir(), "state.json")}
+	core, _ := NewCore(store, func() time.Time { return now })
+	rule := unconfirmedACRule()
+	if err := core.AddRule(rule); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = core.Process((VirtualDevice{ID: "sensor"}).Event("x", 1, now))
+	_, _ = core.Tick(now.Add(time.Minute))
+	_, _ = core.Tick(now.Add(2 * time.Minute)) // ac-on 落地，等待设备确认至 t+5m
+
+	// 第一次重启：等待确认状态与期限随状态文件保留。
+	restarted, err := NewCore(store, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.AddRule(rule); err != nil {
+		t.Fatal(err)
+	}
+	if run := groupRunFor(t, restarted, rule.ID); run.Steps[0].Status != StepWaitingConfirm {
+		t.Fatalf("restart must preserve confirmation wait: %+v", run.Steps)
+	}
+
+	// 设备在窗口内迟到确认：步骤完成，后续步骤才推进。
+	_, _ = restarted.Process((VirtualDevice{ID: "ac"}).Event(PoweredOn, 1, now.Add(4*time.Minute)))
+	if run := groupRunFor(t, restarted, rule.ID); run.Steps[0].Status != StepConfirmed {
+		t.Fatalf("late device confirmation should complete the step: %+v", run.Steps)
+	}
+
+	// 第二次重启：已落地的 ac-on 不得重复执行。
+	restarted2, err := NewCore(store, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted2.AddRule(rule); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = restarted2.Tick(now.Add(5 * time.Minute))
+	if count := countApplied(restarted2, "ac-on"); count != 1 {
+		t.Fatalf("ac-on executed %d times, want exactly 1", count)
+	}
+	run := groupRunFor(t, restarted2, rule.ID)
+	if !run.Done || run.Steps[1].Status != StepConfirmed {
+		t.Fatalf("group should complete after late confirmation: %+v", run.Steps)
+	}
+}
+
+// 停机跨越确认窗口后再次触发：自动化自己写入的目标值不算设备回报，
+// 新运行只能等待确认或记为不确定，绝不跳过确认执行后续步骤，
+// 也不重复下发已有动作。
+func TestGroupRetriggerDoesNotTrustAutomationValue(t *testing.T) {
+	now := time.Unix(9500, 0)
+	store := FileStore{Path: filepath.Join(t.TempDir(), "state.json")}
+	core, _ := NewCore(store, func() time.Time { return now })
+	rule := unconfirmedACRule()
+	if err := core.AddRule(rule); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = core.Process((VirtualDevice{ID: "sensor"}).Event("x", 1, now))
+	_, _ = core.Tick(now.Add(time.Minute))
+	_, _ = core.Tick(now.Add(2 * time.Minute)) // ac-on 落地，等待确认
+
+	restarted, err := NewCore(store, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.AddRule(rule); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = restarted.Tick(now.Add(10 * time.Minute)) // 恢复时窗口已过 -> 不确定
+	_, _ = restarted.Tick(now.Add(11 * time.Minute)) // 规则重新触发 -> 新运行
+
+	// 新运行看到 ac=1 只是自动化自己写入的：进入等待确认而不是跳过。
+	run := groupRunFor(t, restarted, rule.ID)
+	if run.Done || run.Steps[0].Status != StepWaitingConfirm {
+		t.Fatalf("retriggered run must wait for device confirmation: %+v done=%v", run.Steps, run.Done)
+	}
+	if _, ok := restarted.Snapshot().Value("lamp", PoweredOn); ok {
+		t.Fatal("lamp-on must not execute without device confirmation")
+	}
+	if findGroupDecision(restarted.Decisions(), ReasonStepWaiting) == nil {
+		t.Fatal("missing step_waiting_confirm decision")
+	}
+
+	// 新的等待同样超时：只能记为不确定，后续步骤不执行。
+	_, _ = restarted.Tick(now.Add(20 * time.Minute))
+	run = groupRunFor(t, restarted, rule.ID)
+	if !run.Done || run.Steps[0].Status != StepUncertain || run.Steps[1].Status != StepCanceled {
+		t.Fatalf("second timeout must be uncertain: %+v", run.Steps)
+	}
+	if _, ok := restarted.Snapshot().Value("lamp", PoweredOn); ok {
+		t.Fatal("lamp-on must never execute without device confirmation")
+	}
+	if findGroupDecision(restarted.Decisions(), ReasonStepUncertain) == nil {
+		t.Fatal("missing explicit step_uncertain decision")
+	}
+	if count := countApplied(restarted, "ac-on"); count != 1 {
+		t.Fatalf("ac-on executed %d times, want exactly 1", count)
+	}
+}

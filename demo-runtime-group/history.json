@@ -1,0 +1,170 @@
+[
+  {
+    "device_id": "thermostat",
+    "device_type": [
+      "temperature-sensor"
+    ],
+    "name": "temperature_c",
+    "value": 28,
+    "source": "device",
+    "time": "2026-09-30T21:00:00Z"
+  },
+  {
+    "device_id": "bedroom",
+    "room": "bedroom",
+    "name": "occupied",
+    "value": 1,
+    "source": "device",
+    "time": "2026-09-30T21:00:00Z"
+  },
+  {
+    "device_id": "window",
+    "room": "bedroom",
+    "name": "contact_open",
+    "value": 1,
+    "source": "device",
+    "time": "2026-09-30T21:00:00Z"
+  },
+  {
+    "device_id": "humidifier",
+    "room": "bedroom",
+    "name": "online",
+    "value": 1,
+    "source": "device",
+    "time": "2026-09-30T21:00:00Z"
+  },
+  {
+    "device_id": "",
+    "name": "",
+    "value": 0,
+    "source": "",
+    "time": "2026-09-30T21:02:00Z",
+    "tick": true
+  },
+  {
+    "device_id": "",
+    "room": "bedroom",
+    "name": "",
+    "value": 0,
+    "source": "manual",
+    "time": "2026-09-30T21:03:00Z",
+    "override": {
+      "id": "guest",
+      "scope": {
+        "room": "bedroom"
+      },
+      "reason": "客人暂住",
+      "started_at": "0001-01-01T00:00:00Z"
+    }
+  },
+  {
+    "device_id": "window",
+    "room": "bedroom",
+    "name": "contact_open",
+    "value": 0,
+    "source": "device",
+    "time": "2026-09-30T21:04:00Z"
+  },
+  {
+    "device_id": "",
+    "name": "",
+    "value": 0,
+    "source": "",
+    "time": "2026-09-30T21:04:00Z",
+    "tick": true
+  },
+  {
+    "device_id": "",
+    "name": "",
+    "value": 0,
+    "source": "manual",
+    "time": "2026-09-30T21:05:00Z",
+    "revoke_id": "guest"
+  },
+  {
+    "device_id": "",
+    "name": "",
+    "value": 0,
+    "source": "",
+    "time": "2026-09-30T21:05:00Z",
+    "tick": true
+  },
+  {
+    "device_id": "",
+    "name": "",
+    "value": 0,
+    "source": "",
+    "time": "2026-09-30T21:07:00Z",
+    "tick": true
+  },
+  {
+    "device_id": "humidifier",
+    "room": "bedroom",
+    "name": "online",
+    "value": 0,
+    "source": "device",
+    "time": "2026-09-30T21:07:00Z"
+  },
+  {
+    "device_id": "mode",
+    "name": "eco",
+    "value": 1,
+    "source": "device",
+    "time": "2026-09-30T21:07:30Z"
+  },
+  {
+    "device_id": "",
+    "name": "",
+    "value": 0,
+    "source": "",
+    "time": "2026-09-30T21:08:00Z",
+    "tick": true
+  },
+  {
+    "device_id": "",
+    "name": "",
+    "value": 0,
+    "source": "",
+    "time": "2026-09-30T21:09:00Z",
+    "tick": true
+  },
+  {
+    "device_id": "mode",
+    "name": "eco",
+    "value": 0,
+    "source": "device",
+    "time": "2026-09-30T21:10:00Z"
+  },
+  {
+    "device_id": "",
+    "name": "",
+    "value": 0,
+    "source": "",
+    "time": "2026-09-30T21:10:00Z",
+    "tick": true
+  },
+  {
+    "device_id": "",
+    "name": "",
+    "value": 0,
+    "source": "",
+    "time": "2026-09-30T21:12:00Z",
+    "tick": true
+  },
+  {
+    "device_id": "ac",
+    "room": "bedroom",
+    "name": "powered_on",
+    "value": 1,
+    "source": "device",
+    "time": "2026-09-30T21:12:30Z"
+  },
+  {
+    "device_id": "",
+    "name": "",
+    "value": 0,
+    "source": "",
+    "time": "2026-09-30T21:13:00Z",
+    "tick": true
+  }
+]
