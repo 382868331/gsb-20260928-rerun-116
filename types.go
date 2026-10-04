@@ -97,6 +97,14 @@ type SetStateAction struct {
 	ValidFor time.Duration `json:"valid_for,omitempty"`
 }
 
+// Step 是动作组里的一步：先下发目标值，再按 ConfirmTimeout 等待设备回执。
+// ConfirmTimeout 为 0 表示不要求回执，下发即视为已确认；大于 0 时设备
+// 必须在期限内上报相同的目标值，超时仍未确认的步骤记为“不确定”。
+type Step struct {
+	Action         SetStateAction `json:"action"`
+	ConfirmTimeout time.Duration  `json:"confirm_timeout,omitempty"`
+}
+
 type Rule struct {
 	ID          string
 	Description string
@@ -110,6 +118,9 @@ type Rule struct {
 	//   大于 0 表示从人工操作时刻起经过该时长后自动恢复。
 	ManualTTL time.Duration
 	Action    SetStateAction
+	// Steps 非空时规则触发一组有序动作而不是单个 Action：每一步等待
+	// 上一步被设备确认后才下发；人工接管会停止整组的后续步骤。
+	Steps []Step
 }
 
 type Action struct {
@@ -121,6 +132,9 @@ type Action struct {
 	CompleteAt time.Time `json:"complete_at"`
 	// ExpiresAt 非空时，晚于该时刻仍未落地的动作视为过时，不再补发。
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// GroupID / StepIndex 非空时表明该延迟动作属于某次动作组运行的某一步。
+	GroupID   string `json:"group_id,omitempty"`
+	StepIndex int    `json:"step_index,omitempty"`
 }
 
 type ActionRecord struct {
@@ -137,6 +151,9 @@ const (
 	OutcomeScheduled Outcome = "scheduled"
 	// OutcomeOverride 记录人工接管层的建立、到期与撤销。
 	OutcomeOverride Outcome = "override"
+	// OutcomeUncertain 记录动作组某一步在期限内未得到设备确认，
+	// 效果仍不确定（既不算成功也不算取消）。
+	OutcomeUncertain Outcome = "uncertain"
 )
 
 // Reason 给出动作被执行或取消的确定原因，便于逐条核对。
@@ -154,6 +171,11 @@ const (
 	ReasonOverrideStarted    Reason = "override_started"
 	ReasonOverrideExpired    Reason = "override_expired"
 	ReasonOverrideRevoked    Reason = "override_revoked"
+	// 动作组步骤级原因。
+	ReasonStepConfirmed    Reason = "step_confirmed"
+	ReasonAlreadySatisfied Reason = "already_satisfied"
+	ReasonStepUnconfirmed  Reason = "step_unconfirmed"
+	ReasonWaitSharedDevice Reason = "wait_shared_device"
 )
 
 // Decision 记录每个动作为什么被执行、延迟或取消，构成确定性日志。
@@ -168,6 +190,10 @@ type Decision struct {
 	Value    *float64  `json:"value,omitempty"`
 	// OverrideID 标明该决策涉及的人工接管层（如适用）。
 	OverrideID string `json:"override_id,omitempty"`
+	// GroupID / StepIndex 标明该决策属于哪次动作组运行的哪一步（如适用），
+	// 使每个效果都能追溯到具体一次规则判断。
+	GroupID   string `json:"group_id,omitempty"`
+	StepIndex *int   `json:"step_index,omitempty"`
 	// Detail 补充人可读说明，例如停机期间本应发生但未补发的时刻。
 	Detail string `json:"detail,omitempty"`
 }

@@ -51,6 +51,7 @@ func main() {
 	}
 
 	printDecisions(decisions)
+	printGroups(core)
 	printSnapshot(core)
 }
 
@@ -81,6 +82,18 @@ func demoRules() []automation.Rule {
 				automation.DeviceProperty{DeviceID: "daylight", Name: "dark", Operator: automation.OpEq, Value: 1},
 			}},
 			Action: automation.SetStateAction{DeviceID: "indicator", Name: automation.PoweredOn, Value: 1},
+		},
+		{
+			ID:          "secure-cool",
+			Description: "离家模式动作组：先确认窗户已关闭，再开空调（每步区分 下发/确认/不确定）",
+			Condition:   automation.DeviceProperty{DeviceID: "mode", Name: "away", Operator: automation.OpEq, Value: 1},
+			Duration:    time.Minute,
+			Priority:    5,
+			Steps: []automation.Step{
+				{Action: automation.SetStateAction{DeviceID: "window", Name: automation.ContactOpen, Value: 0, After: time.Minute},
+					ConfirmTimeout: 4 * time.Minute},
+				{Action: automation.SetStateAction{DeviceID: "ac", Name: automation.PoweredOn, Value: 1, After: 2 * time.Minute}},
+			},
 		},
 	}
 }
@@ -162,6 +175,9 @@ func runScenario(core *automation.Core, statePath string, start time.Time) (*aut
 				return
 			}
 		} else {
+			// 时钟推进也写入历史：重放需要在与实时运行相同的
+			// 时间点上做裁决，否则决策序列会发散。
+			j.append(automation.Event{Time: when, Tick: true})
 			if _, err := core.Tick(when); err != nil {
 				stepErr = err
 				return
@@ -204,13 +220,55 @@ func runScenario(core *automation.Core, statePath string, start time.Time) (*aut
 	if stepErr != nil {
 		return nil, stepErr
 	}
+
+	// 第二阶段：动作组（先确认窗户关闭，再开空调），交错覆盖
+	// 离线设备、准备中人工接管、部分完成后取消、重启后继续核对。
+	mode := automation.VirtualDevice{ID: "mode", Types: []string{"presence"}}
+	window := automation.VirtualDevice{ID: "window", Types: []string{"window"}}
+	step(at(26), "离家模式开启：动作组条件出现（需持续 1 分钟）", event(mode.Event("away", 1, at(26))))
+	step(at(27), "条件持续满足：动作组启动，排定第一步关窗", nil)
+	step(at(28), "第一步到点：关窗指令已下发，等待窗户回执确认", nil)
+	step(at(29), "窗户设备离线：确认仍未收到，步骤保持 已下发/待确认", event(window.Availability(false, at(29))))
+	if stepErr != nil {
+		return nil, stepErr
+	}
+
+	fmt.Printf("[t+30m] 再次模拟进程重启（从 %s 恢复）\n", statePath)
+	restarted, err = automation.NewCore(automation.FileStore{Path: statePath}, func() time.Time { return at(30) })
+	if err != nil {
+		return nil, err
+	}
+	for _, rule := range demoRules() {
+		if err := restarted.AddRule(rule); err != nil {
+			return nil, err
+		}
+	}
+	core = restarted
+	step(at(30), "重启完成：动作组运行状态已恢复，第一步仍在等待确认", nil)
+
+	step(at(31), "窗户恢复在线", event(window.Availability(true, at(31))))
+	step(at(31), "窗户回执已关闭：第一步确认，排定第二步开空调",
+		event(window.Event(automation.ContactOpen, 0, at(31))))
+	takeover := automation.Override{ID: "guest-ac", Scope: automation.OverrideScope{DeviceID: "ac"}, Reason: "客人手动使用空调"}
+	step(at(32), "准备阶段人工接管空调：第二步取消，已确认的第一步保留（部分完成）",
+		event(automation.Event{Source: automation.SourceManual, Time: at(32), Override: &takeover}))
+	step(at(33), "接管期内推进时间：被取消的步骤不会补发", nil)
+	step(at(34), "撤销接管：规则重新观察条件", event(automation.Event{Source: automation.SourceManual, Time: at(34), RevokeID: "guest-ac"}))
+	step(at(35), "重新触发：窗户已关闭（当前观察）→ 第一步跳过，只执行仍需要的第二步", nil)
+	step(at(37), "第二步到点：开空调，动作组完成", nil)
+	if stepErr != nil {
+		return nil, stepErr
+	}
 	return core, nil
 }
 
 func printState(core *automation.Core) {
 	snapshot := core.Snapshot()
-	for _, id := range []string{"lamp", "indicator"} {
+	for _, id := range []string{"lamp", "indicator", "window", "ac"} {
 		value, ok := snapshot.Value(id, automation.PoweredOn)
+		if id == "window" {
+			value, ok = snapshot.Value(id, automation.ContactOpen)
+		}
 		if ok {
 			fmt.Printf("         %s=%v\n", id, value)
 		}
@@ -231,6 +289,29 @@ func printDecisions(decisions []automation.Decision) {
 		}
 		fmt.Printf("%s  %-9s %-28s rule=%-15s action=%-18s %s.%s -> %s\n",
 			d.At.Format("15:04:05"), d.Outcome, d.Reason, d.RuleID, d.ActionID, d.DeviceID, d.Name, value)
+	}
+}
+
+func printGroups(core *automation.Core) {
+	fmt.Println()
+	fmt.Println("== 动作组运行（每步的最终状态）==")
+	groups := core.Groups()
+	if len(groups) == 0 {
+		fmt.Println("（无）")
+		return
+	}
+	for _, group := range groups {
+		fmt.Printf("%s (rule=%s, started=%s)\n", group.ID, group.RuleID, group.StartedAt.Format("15:04:05"))
+		for idx, step := range group.Steps {
+			line := fmt.Sprintf("    step %d: %-9s %s.%s -> %v", idx, step.State, step.Action.DeviceID, step.Action.Name, step.Action.Value)
+			if step.OverrideID != "" {
+				line += fmt.Sprintf(" [override=%s]", step.OverrideID)
+			}
+			if step.Detail != "" {
+				line += fmt.Sprintf(" (%s)", step.Detail)
+			}
+			fmt.Println(line)
+		}
 	}
 }
 

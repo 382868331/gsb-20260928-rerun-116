@@ -126,13 +126,23 @@ func (c *Core) applyTakeoverLocked(override Override, at time.Time) {
 		if !override.covers(action.DeviceID, room, action.Name) {
 			continue
 		}
-		delete(c.pending, action.ID)
-		c.recordDecisionLocked(Decision{
-			At: at, Outcome: OutcomeCanceled, Reason: ReasonManualIntervention,
-			RuleID: action.RuleID, ActionID: action.ID,
-			DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
-			OverrideID: override.ID,
-		})
+		c.cancelPendingWithOverrideLocked(action, at, ReasonManualIntervention, override.ID)
+	}
+	// 接管罩住准备中（已下发待确认或等待共享设备）的组步骤时，
+	// 停止该组的后续动作，决策携带接管层 ID 以便追溯。
+	for _, group := range c.orderedGroupsLocked() {
+		for idx := range group.Steps {
+			step := &group.Steps[idx]
+			if step.State != StepIssued && !(step.State == StepPending && step.WaitingFor != "") {
+				continue
+			}
+			room := c.devices[step.Action.DeviceID].Room
+			if !override.covers(step.Action.DeviceID, room, step.Action.Name) {
+				continue
+			}
+			c.cancelGroupStepLocked(group, idx, StepCanceled, at, ReasonManualIntervention, override.ID,
+				"takeover during preparation")
+		}
 	}
 }
 
@@ -175,11 +185,17 @@ func (c *Core) expireOverridesLocked(at time.Time) bool {
 // 也未处于旧式人工覆盖中的规则重置为重新观察条件的状态。
 func (c *Core) rearmUncoveredRulesLocked(removed Override) {
 	for id, rule := range c.rules {
-		room := c.devices[rule.Action.DeviceID].Room
-		if !removed.covers(rule.Action.DeviceID, room, rule.Action.Name) {
+		affected := false
+		for _, target := range ruleTargets(rule) {
+			room := c.devices[target.DeviceID].Room
+			if removed.covers(target.DeviceID, room, target.Name) {
+				affected = true
+			}
+		}
+		if !affected {
 			continue
 		}
-		if c.overrideCoveringLocked(rule.Action.DeviceID, rule.Action.Name) != nil {
+		if c.ruleCoveredLocked(rule) != nil {
 			continue // 仍有其他层罩着，维持接管状态
 		}
 		runtime := c.runtime[id]

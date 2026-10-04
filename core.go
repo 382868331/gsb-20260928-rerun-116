@@ -21,6 +21,7 @@ type persistentState struct {
 	Rules     map[string]ruleRuntime `json:"rules"`
 	Actions   map[string]Action      `json:"actions"`
 	Overrides map[string]Override    `json:"overrides,omitempty"`
+	Groups    map[string]*GroupRun   `json:"groups,omitempty"`
 	Seq       uint64                 `json:"seq"`
 	History   []Event                `json:"history,omitempty"`
 	Applied   []ActionRecord         `json:"applied,omitempty"`
@@ -36,6 +37,7 @@ type Core struct {
 	runtime   map[string]ruleRuntime
 	pending   map[string]Action
 	overrides map[string]Override
+	groups    map[string]*GroupRun
 	applied   []ActionRecord
 	history   []Event
 	decisions []Decision
@@ -54,6 +56,7 @@ func NewCore(store Store, now func() time.Time) (*Core, error) {
 		runtime:   make(map[string]ruleRuntime),
 		pending:   make(map[string]Action),
 		overrides: make(map[string]Override),
+		groups:    make(map[string]*GroupRun),
 	}
 	if store == nil {
 		return core, nil
@@ -67,6 +70,7 @@ func NewCore(store Store, now func() time.Time) (*Core, error) {
 		core.runtime = state.Rules
 		core.pending = state.Actions
 		core.overrides = state.Overrides
+		core.groups = state.Groups
 		core.seq = state.Seq
 		core.applied = state.Applied
 		core.history = state.History
@@ -83,13 +87,24 @@ func NewCore(store Store, now func() time.Time) (*Core, error) {
 		if core.overrides == nil {
 			core.overrides = make(map[string]Override)
 		}
+		if core.groups == nil {
+			core.groups = make(map[string]*GroupRun)
+		}
 	}
 	return core, nil
 }
 
 func (c *Core) AddRule(rule Rule) error {
-	if rule.ID == "" || rule.Condition == nil || rule.Action.DeviceID == "" || rule.Action.Name == "" {
-		return fmt.Errorf("rule requires id, condition and set-state action")
+	if rule.ID == "" || rule.Condition == nil {
+		return fmt.Errorf("rule requires id and condition")
+	}
+	if len(rule.Steps) == 0 && (rule.Action.DeviceID == "" || rule.Action.Name == "") {
+		return fmt.Errorf("rule requires a set-state action or steps")
+	}
+	for _, step := range rule.Steps {
+		if step.Action.DeviceID == "" || step.Action.Name == "" {
+			return fmt.Errorf("rule %q has a step without device or property", rule.ID)
+		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -145,6 +160,8 @@ func (c *Core) evaluateLocked(at time.Time) []Action {
 	for pass := 0; pass < maxEvaluationPasses; pass++ {
 		changed := c.expireBlocksLocked(at)
 		changed = c.expireOverridesLocked(at) || changed
+		changed = c.checkConfirmationsLocked(at) || changed
+		changed = c.retryWaitingStepsLocked(at) || changed
 		dueChanged := c.processDueLocked(at, &applied)
 		fireChanged := c.evaluateRulesLocked(at)
 		if !changed && !dueChanged && !fireChanged {
@@ -276,7 +293,7 @@ func (c *Core) evaluateRulesLocked(at time.Time) bool {
 		if c.isBlockedLocked(runtime, at) {
 			continue
 		}
-		if c.overrideCoveringLocked(rule.Action.DeviceID, rule.Action.Name) != nil {
+		if c.ruleCoveredLocked(rule) != nil {
 			continue
 		}
 		if !runtime.Satisfied {
@@ -292,6 +309,12 @@ func (c *Core) evaluateRulesLocked(at time.Time) bool {
 		}
 		runtime.Fired = true
 		c.runtime[rule.ID] = runtime
+		if len(rule.Steps) > 0 {
+			// 动作组：创建一次组运行，逐步下发并逐步确认。
+			c.startGroupLocked(rule, at)
+			changed = true
+			continue
+		}
 		action := c.enqueueLocked(rule, at)
 		if action.CompleteAt.After(at) {
 			c.recordDecisionLocked(Decision{
@@ -354,21 +377,37 @@ func (c *Core) isBlockedLocked(runtime ruleRuntime, at time.Time) bool {
 
 func (c *Core) cancelPendingLocked(action Action, at time.Time, reason Reason) {
 	delete(c.pending, action.ID)
-	c.recordDecisionLocked(Decision{
+	decision := Decision{
 		At: at, Outcome: OutcomeCanceled, Reason: reason,
 		RuleID: action.RuleID, ActionID: action.ID,
 		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
-	})
+	}
+	if action.GroupID != "" {
+		decision.GroupID = action.GroupID
+		decision.StepIndex = intPtr(action.StepIndex)
+	}
+	c.recordDecisionLocked(decision)
+	if action.GroupID != "" {
+		c.resolveGroupStepLocked(action.GroupID, action.StepIndex, stepStateForReason(reason), at, reason, "")
+	}
 }
 
 func (c *Core) cancelPendingWithOverrideLocked(action Action, at time.Time, reason Reason, overrideID string) {
 	delete(c.pending, action.ID)
-	c.recordDecisionLocked(Decision{
+	decision := Decision{
 		At: at, Outcome: OutcomeCanceled, Reason: reason,
 		RuleID: action.RuleID, ActionID: action.ID,
 		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
 		OverrideID: overrideID,
-	})
+	}
+	if action.GroupID != "" {
+		decision.GroupID = action.GroupID
+		decision.StepIndex = intPtr(action.StepIndex)
+	}
+	c.recordDecisionLocked(decision)
+	if action.GroupID != "" {
+		c.resolveGroupStepLocked(action.GroupID, action.StepIndex, stepStateForReason(reason), at, reason, overrideID)
+	}
 }
 
 func (c *Core) Snapshot() Snapshot {
@@ -472,26 +511,38 @@ func (c *Core) applyEventLocked(event Event, at time.Time) {
 	device.Values[event.Name] = ValueState{Value: event.Value, LastSource: event.Source}
 	c.devices[event.DeviceID] = device
 
+	if event.Source == SourceDevice {
+		// 设备回执可确认动作组里“目标已下发”的步骤。
+		c.confirmStepsLocked(event, at)
+	}
 	if event.Source != SourceManual {
 		return
 	}
 	// 人工操作立即取消同设备同属性的待执行自动化动作，
 	// 避免延迟动作在人工接管后落地。
-	for id, action := range c.pending {
+	for _, action := range c.orderedPendingLocked() {
 		if action.DeviceID == event.DeviceID && action.Name == event.Name {
-			deleted := c.pending[id]
-			delete(c.pending, id)
-			c.recordDecisionLocked(Decision{
-				At: at, Outcome: OutcomeCanceled, Reason: ReasonManualIntervention,
-				RuleID: deleted.RuleID, ActionID: deleted.ID,
-				DeviceID: deleted.DeviceID, Name: deleted.Name, Value: &deleted.Value,
-			})
+			c.cancelPendingLocked(action, at, ReasonManualIntervention)
+		}
+	}
+	// 人工接管准备中（已下发待确认或等待共享设备）的组步骤时，
+	// 停止该组的后续动作。
+	for _, group := range c.orderedGroupsLocked() {
+		for idx := range group.Steps {
+			step := &group.Steps[idx]
+			if step.Action.DeviceID != event.DeviceID || step.Action.Name != event.Name {
+				continue
+			}
+			if step.State == StepIssued || (step.State == StepPending && step.WaitingFor != "") {
+				c.cancelGroupStepLocked(group, idx, StepCanceled, at, ReasonManualIntervention, "",
+					"manual takeover during preparation")
+			}
 		}
 	}
 	// 对所有会控制该设备属性的规则建立人工覆盖。ManualTTL > 0 时覆盖
 	// 只在该期限内有效；ManualTTL == 0 时持续到条件重新变假并再次为真。
 	for id, rule := range c.rules {
-		if rule.Action.DeviceID == event.DeviceID && rule.Action.Name == event.Name {
+		if ruleControls(rule, event.DeviceID, event.Name) {
 			runtime := c.runtime[id]
 			runtime = ruleRuntime{Blocked: true, Satisfied: false, Fired: false}
 			if rule.ManualTTL > 0 {
@@ -531,11 +582,19 @@ func (c *Core) applyPendingLocked(action Action, at time.Time) {
 	device.Values[action.Name] = ValueState{Value: action.Value, LastSource: SourceAutomation}
 	c.devices[action.DeviceID] = device
 	c.applied = append(c.applied, ActionRecord{Action: action, At: at})
-	c.recordDecisionLocked(Decision{
+	decision := Decision{
 		At: at, Outcome: OutcomeExecuted, Reason: ReasonConditionHeld,
 		RuleID: action.RuleID, ActionID: action.ID,
 		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
-	})
+	}
+	if action.GroupID != "" {
+		decision.GroupID = action.GroupID
+		decision.StepIndex = intPtr(action.StepIndex)
+	}
+	c.recordDecisionLocked(decision)
+	if action.GroupID != "" {
+		c.markStepIssuedLocked(action, at)
+	}
 }
 
 func (c *Core) recordDecisionLocked(decision Decision) {
@@ -583,6 +642,7 @@ func (c *Core) saveLocked() error {
 		Rules:     c.runtime,
 		Actions:   c.pending,
 		Overrides: c.overrides,
+		Groups:    c.groups,
 		Seq:       c.seq,
 		History:   c.history,
 		Applied:   c.applied,
