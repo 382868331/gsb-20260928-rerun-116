@@ -126,13 +126,7 @@ func (c *Core) applyTakeoverLocked(override Override, at time.Time) {
 		if !override.covers(action.DeviceID, room, action.Name) {
 			continue
 		}
-		delete(c.pending, action.ID)
-		c.recordDecisionLocked(Decision{
-			At: at, Outcome: OutcomeCanceled, Reason: ReasonManualIntervention,
-			RuleID: action.RuleID, ActionID: action.ID,
-			DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
-			OverrideID: override.ID,
-		})
+		c.cancelPendingWithOverrideLocked(action, at, ReasonManualIntervention, override.ID)
 	}
 }
 
@@ -175,11 +169,18 @@ func (c *Core) expireOverridesLocked(at time.Time) bool {
 // 也未处于旧式人工覆盖中的规则重置为重新观察条件的状态。
 func (c *Core) rearmUncoveredRulesLocked(removed Override) {
 	for id, rule := range c.rules {
-		room := c.devices[rule.Action.DeviceID].Room
-		if !removed.covers(rule.Action.DeviceID, room, rule.Action.Name) {
+		affected := false
+		for _, target := range ruleTargets(rule) {
+			room := c.devices[target[0]].Room
+			if removed.covers(target[0], room, target[1]) {
+				affected = true
+				break
+			}
+		}
+		if !affected {
 			continue
 		}
-		if c.overrideCoveringLocked(rule.Action.DeviceID, rule.Action.Name) != nil {
+		if c.ruleCoveredByOverrideLocked(rule) != nil {
 			continue // 仍有其他层罩着，维持接管状态
 		}
 		runtime := c.runtime[id]

@@ -114,6 +114,51 @@
   override_started / override_expired / override_revoked），并以事件形式
   进入历史，重启恢复与离线重放都能复现。
 
+### 动作组（多步骤序列）
+
+规则的 Steps 非空时，触发的是一组按序执行的步骤，而不是单个动作：
+
+	core.AddRule(automation.Rule{
+	    ID: "bedtime-ac", Duration: 2 * time.Minute,
+	    Condition: automation.All{Conditions: []automation.Condition{ /* ... */ }},
+	    Steps: []automation.Step{
+	        // 第一步：确认窗户已关闭（4 分钟内确认不了则记为不确定）
+	        {ID: "confirm-window", Verify: &automation.StepVerify{
+	            DeviceID: "window", Name: automation.ContactOpen,
+	            Operator: automation.OpEq, Value: 0, Within: 4 * time.Minute}},
+	        // 第二步：开窗确认后才开空调，并要求设备上报确认
+	        {ID: "ac-on", Action: &automation.SetStateAction{
+	            DeviceID: "ac", Name: automation.PoweredOn, Value: 1,
+	            After: time.Minute}, ConfirmWithin: 3 * time.Minute},
+	    },
+	})
+
+- 每一步独立区分状态：目标已定义（pending / waiting_confirm）、设备已确认
+  效果（confirmed / skipped）、仍不确定（uncertain）、已取消（canceled）；
+  整组只有在全部步骤确认后才记录 group_completed——规则触发本身绝不
+  把整组记成完成。
+- 动作步骤的“确认”要求设备以自身上报（SourceDevice）达到目标值；
+  自动化自己写入的值不算设备确认。确认窗口（ConfirmWithin / Verify.Within）
+  内未确认时步骤记为 uncertain，后续步骤不再执行。
+- 准备阶段（确认等待或动作未落地）被人工操作 / 接管层罩住任一剩余步骤
+  目标时，整组立即停止，决策记录 group_canceled 及涉及的 OverrideID。
+- 接管撤销后规则从头重新观察条件；新运行按当前观察判断每一步：
+  目标已满足的步骤记 step_already_satisfied 直接跳过，失去时效的旧动作
+  不补发（旧动作 ID 不会再次出现）。
+- 多组共享设备时按既有优先级裁决，败方决策的 Detail 记录胜出的动作、
+  规则与优先级（等待 / 冲突的依据）；独立设备的组照常推进。
+- 组运行状态随核持久化：重启后未完成的确认等待继续核对；停机跨越确认
+  窗口时步骤记为 uncertain 并在 Detail 中区分本应截止的时刻与实际发现
+  时刻，而不是当作完成。
+- 决策与动作都携带 RunID / StepID / OverrideID：每个效果可追溯到哪一次
+  规则判断（运行）与哪一层人工覆盖。GroupRuns() 返回各组每步的当前状态。
+
+独立演示（虚拟时钟，无需硬件）交错覆盖：准备阶段接管 → 部分完成后取消 →
+撤销后按当前观察重判 → 共享设备冲突裁决 → 重启后继续核对 → 离线设备取消：
+
+    go run ./cmd/homeauto-group-demo
+    go run ./cmd/homeauto-group-demo --replay   # 用录制的历史确定性重放
+
 ### 设备离线
 
 - 设备上报 online=0（VirtualDevice.Availability(false, at)）即视为离线：

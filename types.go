@@ -97,6 +97,28 @@ type SetStateAction struct {
 	ValidFor time.Duration `json:"valid_for,omitempty"`
 }
 
+// StepVerify 描述一个“确认效果”步骤：等待设备属性达到目标值。
+// 在 Within 内未确认时该步骤记为不确定（uncertain），后续步骤不再执行。
+type StepVerify struct {
+	DeviceID string
+	Name     string
+	Operator Operator
+	Value    float64
+	// Within 为确认等待窗口；0 表示只在步骤开始时检查一次。
+	Within time.Duration
+}
+
+// Step 是动作组中的一个步骤：要么执行设备动作，要么等待确认某个效果。
+// Action 与 Verify 必须且只能填一个。
+type Step struct {
+	ID     string
+	Action *SetStateAction
+	Verify *StepVerify
+	// ConfirmWithin 仅对动作步骤有效：动作落地后等待设备以上报（SourceDevice）
+	// 确认目标值的窗口；0 表示落地即视为确认。窗口内未确认则步骤记为不确定。
+	ConfirmWithin time.Duration
+}
+
 type Rule struct {
 	ID          string
 	Description string
@@ -110,6 +132,10 @@ type Rule struct {
 	//   大于 0 表示从人工操作时刻起经过该时长后自动恢复。
 	ManualTTL time.Duration
 	Action    SetStateAction
+	// Steps 非空时规则触发的是一组按序执行的步骤（动作组），
+	// 此时 Action 字段被忽略。组内每一步独立记录目标、确认与不确定状态，
+	// 整组只有在全部步骤确认后才记为完成。
+	Steps []Step
 }
 
 type Action struct {
@@ -121,6 +147,10 @@ type Action struct {
 	CompleteAt time.Time `json:"complete_at"`
 	// ExpiresAt 非空时，晚于该时刻仍未落地的动作视为过时，不再补发。
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// RunID / StepID 非空时表明该动作属于某次动作组运行的某一步，
+	// 用于把每个效果追溯到具体的规则判断（运行）与步骤。
+	RunID  string `json:"run_id,omitempty"`
+	StepID string `json:"step_id,omitempty"`
 }
 
 type ActionRecord struct {
@@ -137,6 +167,8 @@ const (
 	OutcomeScheduled Outcome = "scheduled"
 	// OutcomeOverride 记录人工接管层的建立、到期与撤销。
 	OutcomeOverride Outcome = "override"
+	// OutcomeGroup 记录动作组运行与组内步骤的生命周期决策。
+	OutcomeGroup Outcome = "group"
 )
 
 // Reason 给出动作被执行或取消的确定原因，便于逐条核对。
@@ -154,6 +186,14 @@ const (
 	ReasonOverrideStarted    Reason = "override_started"
 	ReasonOverrideExpired    Reason = "override_expired"
 	ReasonOverrideRevoked    Reason = "override_revoked"
+	// 动作组相关原因。
+	ReasonGroupStarted   Reason = "group_started"
+	ReasonGroupCompleted Reason = "group_completed"
+	ReasonGroupCanceled  Reason = "group_canceled"
+	ReasonStepConfirmed  Reason = "step_confirmed"
+	ReasonStepUncertain  Reason = "step_uncertain"
+	// ReasonStepSkipped 表示步骤目标在当前观察下已经满足，无需再执行。
+	ReasonStepSkipped Reason = "step_already_satisfied"
 )
 
 // Decision 记录每个动作为什么被执行、延迟或取消，构成确定性日志。
@@ -168,6 +208,9 @@ type Decision struct {
 	Value    *float64  `json:"value,omitempty"`
 	// OverrideID 标明该决策涉及的人工接管层（如适用）。
 	OverrideID string `json:"override_id,omitempty"`
+	// RunID / StepID 把决策追溯到具体的一次动作组运行与步骤。
+	RunID  string `json:"run_id,omitempty"`
+	StepID string `json:"step_id,omitempty"`
 	// Detail 补充人可读说明，例如停机期间本应发生但未补发的时刻。
 	Detail string `json:"detail,omitempty"`
 }

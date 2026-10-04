@@ -14,6 +14,9 @@ type ruleRuntime struct {
 	Fired        bool       `json:"fired"`
 	Blocked      bool       `json:"blocked"`
 	BlockedUntil *time.Time `json:"blocked_until,omitempty"`
+	// Group 是动作组规则当前/最近一次运行的状态，随核一起持久化，
+	// 重启后据此继续核对未完成的步骤，而不是补发旧动作。
+	Group *groupRuntime `json:"group,omitempty"`
 }
 
 type persistentState struct {
@@ -88,8 +91,25 @@ func NewCore(store Store, now func() time.Time) (*Core, error) {
 }
 
 func (c *Core) AddRule(rule Rule) error {
-	if rule.ID == "" || rule.Condition == nil || rule.Action.DeviceID == "" || rule.Action.Name == "" {
+	if rule.ID == "" || rule.Condition == nil {
 		return fmt.Errorf("rule requires id, condition and set-state action")
+	}
+	if len(rule.Steps) == 0 && (rule.Action.DeviceID == "" || rule.Action.Name == "") {
+		return fmt.Errorf("rule requires id, condition and set-state action")
+	}
+	for i, step := range rule.Steps {
+		if step.ID == "" {
+			return fmt.Errorf("rule %q step %d requires id", rule.ID, i)
+		}
+		if (step.Action == nil) == (step.Verify == nil) {
+			return fmt.Errorf("rule %q step %q requires exactly one of action or verify", rule.ID, step.ID)
+		}
+		if step.Action != nil && (step.Action.DeviceID == "" || step.Action.Name == "") {
+			return fmt.Errorf("rule %q step %q action requires device and name", rule.ID, step.ID)
+		}
+		if step.Verify != nil && (step.Verify.DeviceID == "" || step.Verify.Name == "") {
+			return fmt.Errorf("rule %q step %q verify requires device and name", rule.ID, step.ID)
+		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -147,7 +167,8 @@ func (c *Core) evaluateLocked(at time.Time) []Action {
 		changed = c.expireOverridesLocked(at) || changed
 		dueChanged := c.processDueLocked(at, &applied)
 		fireChanged := c.evaluateRulesLocked(at)
-		if !changed && !dueChanged && !fireChanged {
+		groupChanged := c.evaluateGroupsLocked(at)
+		if !changed && !dueChanged && !fireChanged && !groupChanged {
 			break
 		}
 	}
@@ -205,6 +226,7 @@ func (c *Core) processDueLocked(at time.Time, applied *[]Action) bool {
 				Detail: fmt.Sprintf("due at %s, expired at %s; not reissued",
 					action.CompleteAt.Format(time.RFC3339), action.ExpiresAt.Format(time.RFC3339)),
 			})
+			c.noteActionCanceledLocked(action, at, ReasonStaleAction, "")
 			changed = true
 			continue
 		}
@@ -276,7 +298,7 @@ func (c *Core) evaluateRulesLocked(at time.Time) bool {
 		if c.isBlockedLocked(runtime, at) {
 			continue
 		}
-		if c.overrideCoveringLocked(rule.Action.DeviceID, rule.Action.Name) != nil {
+		if c.ruleCoveredByOverrideLocked(rule) != nil {
 			continue
 		}
 		if !runtime.Satisfied {
@@ -292,6 +314,12 @@ func (c *Core) evaluateRulesLocked(at time.Time) bool {
 		}
 		runtime.Fired = true
 		c.runtime[rule.ID] = runtime
+		if len(rule.Steps) > 0 {
+			// 动作组规则：开启一次运行，由组逻辑逐步推进与确认。
+			c.startGroupLocked(rule, at)
+			changed = true
+			continue
+		}
 		action := c.enqueueLocked(rule, at)
 		if action.CompleteAt.After(at) {
 			c.recordDecisionLocked(Decision{
@@ -325,12 +353,29 @@ func (c *Core) arbitrateLocked(at time.Time) {
 			continue
 		}
 		winner := c.pending[winnerID]
+		winnerRule := c.rules[winner.RuleID]
+		loserRule := c.rules[action.RuleID]
+		// 说明冲突裁决依据：谁胜出、双方规则与优先级，便于核对等待/冲突原因。
+		detail := fmt.Sprintf("winner %s (rule %s, priority %d) over rule %s (priority %d)",
+			winner.ID, winner.RuleID, winnerRule.Priority, action.RuleID, loserRule.Priority)
 		if winner.Value == action.Value {
-			c.cancelPendingLocked(action, at, ReasonDuplicate)
+			c.cancelPendingWithDetailLocked(action, at, ReasonDuplicate, detail)
 		} else {
-			c.cancelPendingLocked(action, at, ReasonSuperseded)
+			c.cancelPendingWithDetailLocked(action, at, ReasonSuperseded, detail)
 		}
 	}
+}
+
+func (c *Core) cancelPendingWithDetailLocked(action Action, at time.Time, reason Reason, detail string) {
+	delete(c.pending, action.ID)
+	c.recordDecisionLocked(Decision{
+		At: at, Outcome: OutcomeCanceled, Reason: reason,
+		RuleID: action.RuleID, ActionID: action.ID,
+		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
+		RunID: action.RunID, StepID: action.StepID,
+		Detail: detail,
+	})
+	c.noteActionCanceledLocked(action, at, reason, "")
 }
 
 func (c *Core) actionWinsLocked(candidate, incumbent Action) bool {
@@ -358,7 +403,9 @@ func (c *Core) cancelPendingLocked(action Action, at time.Time, reason Reason) {
 		At: at, Outcome: OutcomeCanceled, Reason: reason,
 		RuleID: action.RuleID, ActionID: action.ID,
 		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
+		RunID: action.RunID, StepID: action.StepID,
 	})
+	c.noteActionCanceledLocked(action, at, reason, "")
 }
 
 func (c *Core) cancelPendingWithOverrideLocked(action Action, at time.Time, reason Reason, overrideID string) {
@@ -368,7 +415,9 @@ func (c *Core) cancelPendingWithOverrideLocked(action Action, at time.Time, reas
 		RuleID: action.RuleID, ActionID: action.ID,
 		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
 		OverrideID: overrideID,
+		RunID:      action.RunID, StepID: action.StepID,
 	})
+	c.noteActionCanceledLocked(action, at, reason, overrideID)
 }
 
 func (c *Core) Snapshot() Snapshot {
@@ -480,12 +529,7 @@ func (c *Core) applyEventLocked(event Event, at time.Time) {
 	for id, action := range c.pending {
 		if action.DeviceID == event.DeviceID && action.Name == event.Name {
 			deleted := c.pending[id]
-			delete(c.pending, id)
-			c.recordDecisionLocked(Decision{
-				At: at, Outcome: OutcomeCanceled, Reason: ReasonManualIntervention,
-				RuleID: deleted.RuleID, ActionID: deleted.ID,
-				DeviceID: deleted.DeviceID, Name: deleted.Name, Value: &deleted.Value,
-			})
+			c.cancelPendingLocked(deleted, at, ReasonManualIntervention)
 		}
 	}
 	// 对所有会控制该设备属性的规则建立人工覆盖。ManualTTL > 0 时覆盖
@@ -535,7 +579,9 @@ func (c *Core) applyPendingLocked(action Action, at time.Time) {
 		At: at, Outcome: OutcomeExecuted, Reason: ReasonConditionHeld,
 		RuleID: action.RuleID, ActionID: action.ID,
 		DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
+		RunID: action.RunID, StepID: action.StepID,
 	})
+	c.groupActionExecutedLocked(action, at)
 }
 
 func (c *Core) recordDecisionLocked(decision Decision) {
