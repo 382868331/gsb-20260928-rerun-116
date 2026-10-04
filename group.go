@@ -21,6 +21,19 @@ type stepState struct {
 	Status string `json:"status"`
 }
 
+// snapshotValueState 返回设备属性的完整值状态（含来源），离线设备不可见。
+func snapshotValueState(snapshot Snapshot, deviceID, name string) (ValueState, bool) {
+	if snapshot.Offline(deviceID) {
+		return ValueState{}, false
+	}
+	device, ok := snapshot.Devices[deviceID]
+	if !ok {
+		return ValueState{}, false
+	}
+	state, ok := device.Values[name]
+	return state, ok
+}
+
 // groupRuntime 是一次动作组运行的持久化状态：重启后据此继续核对
 // 未完成的确认等待，而不是从头补发旧动作。
 type groupRuntime struct {
@@ -97,11 +110,7 @@ func (c *Core) advanceGroupLocked(rule Rule, at time.Time) bool {
 	for gr.StepIndex < len(rule.Steps) {
 		step := rule.Steps[gr.StepIndex]
 		if step.Verify != nil {
-			condition := DeviceProperty{
-				DeviceID: step.Verify.DeviceID, Name: step.Verify.Name,
-				Operator: step.Verify.Operator, Value: step.Verify.Value,
-			}
-			if condition.Evaluate(snapshot) {
+			if verifySatisfied(step.Verify, snapshot) {
 				gr.Steps[gr.StepIndex].Status = StepConfirmed
 				c.recordDecisionLocked(Decision{
 					At: at, Outcome: OutcomeGroup, Reason: ReasonStepConfirmed,
@@ -119,8 +128,27 @@ func (c *Core) advanceGroupLocked(rule Rule, at time.Time) bool {
 			c.runtime[rule.ID] = runtime
 			return true
 		}
-		if value, ok := snapshot.Value(step.Action.DeviceID, step.Action.Name); ok && value == step.Action.Value {
-			// 当前观察下目标已满足：不补发动作，直接记为已确认。
+		state, ok := snapshotValueState(snapshot, step.Action.DeviceID, step.Action.Name)
+		if ok && state.Value == step.Action.Value && state.LastSource == SourceAutomation && step.ConfirmWithin > 0 {
+			// 目标值是自动化此前下发、设备尚未回报的：自动下发值不能
+			// 替代设备回报，也不重复下发已有动作——按 ConfirmWithin
+			// 重新等待设备自身上报确认，超时记为不确定。
+			deadline := at.Add(step.ConfirmWithin)
+			gr.ConfirmDeadline = &deadline
+			gr.Steps[gr.StepIndex].Status = StepWaitingConfirm
+			runtime.Group = gr
+			c.runtime[rule.ID] = runtime
+			c.recordDecisionLocked(Decision{
+				At: at, Outcome: OutcomeGroup, Reason: ReasonStepWaiting,
+				RuleID: rule.ID, RunID: gr.RunID, StepID: step.ID,
+				DeviceID: step.Action.DeviceID, Name: step.Action.Name, Value: &step.Action.Value,
+				Detail: "value already dispatched by automation; awaiting device report instead of re-dispatching",
+			})
+			return true
+		}
+		if ok && state.Value == step.Action.Value && state.LastSource != SourceAutomation {
+			// 当前观察下目标已满足（设备上报或人工置位）：不补发动作，
+			// 直接记为已确认。自动化自己写入的值不在此列。
 			gr.Steps[gr.StepIndex].Status = StepSkipped
 			c.recordDecisionLocked(Decision{
 				At: at, Outcome: OutcomeGroup, Reason: ReasonStepSkipped,
@@ -216,11 +244,7 @@ func (c *Core) evaluateGroupsLocked(at time.Time) bool {
 // 自动化自己写入的值不算设备确认。
 func (c *Core) stepConfirmedLocked(step Step, snapshot Snapshot) bool {
 	if step.Verify != nil {
-		condition := DeviceProperty{
-			DeviceID: step.Verify.DeviceID, Name: step.Verify.Name,
-			Operator: step.Verify.Operator, Value: step.Verify.Value,
-		}
-		return condition.Evaluate(snapshot)
+		return verifySatisfied(step.Verify, snapshot)
 	}
 	device, ok := snapshot.Devices[step.Action.DeviceID]
 	if !ok || snapshot.Offline(step.Action.DeviceID) {
@@ -228,6 +252,20 @@ func (c *Core) stepConfirmedLocked(step Step, snapshot Snapshot) bool {
 	}
 	state, ok := device.Values[step.Action.Name]
 	return ok && state.Value == step.Action.Value && state.LastSource == SourceDevice
+}
+
+// verifySatisfied 判断确认步骤的目标是否由设备上报（SourceDevice）达成：
+// 自动化自己写入的值不能替代设备回报。
+func verifySatisfied(verify *StepVerify, snapshot Snapshot) bool {
+	condition := DeviceProperty{
+		DeviceID: verify.DeviceID, Name: verify.Name,
+		Operator: verify.Operator, Value: verify.Value,
+	}
+	if !condition.Evaluate(snapshot) {
+		return false
+	}
+	state, ok := snapshotValueState(snapshot, verify.DeviceID, verify.Name)
+	return ok && state.LastSource == SourceDevice
 }
 
 // groupCoveringOverrideLocked 返回罩住任一剩余步骤目标设备的第一层接管。
@@ -339,6 +377,12 @@ func (c *Core) groupActionExecutedLocked(action Action, at time.Time) {
 		gr.Steps[gr.StepIndex].Status = StepWaitingConfirm
 		runtime.Group = gr
 		c.runtime[action.RuleID] = runtime
+		c.recordDecisionLocked(Decision{
+			At: at, Outcome: OutcomeGroup, Reason: ReasonStepWaiting,
+			RuleID: rule.ID, RunID: gr.RunID, StepID: step.ID,
+			DeviceID: action.DeviceID, Name: action.Name, Value: &action.Value,
+			Detail: "action dispatched; awaiting device confirmation until " + deadline.Format(time.RFC3339),
+		})
 		return
 	}
 	gr.Steps[gr.StepIndex].Status = StepConfirmed

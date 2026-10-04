@@ -192,6 +192,9 @@ const (
 	ReasonGroupCanceled  Reason = "group_canceled"
 	ReasonStepConfirmed  Reason = "step_confirmed"
 	ReasonStepUncertain  Reason = "step_uncertain"
+	// ReasonStepWaiting 表示步骤已下发（或此前已下发）目标值，
+	// 正在等待设备自身上报确认，并标明等待期限。
+	ReasonStepWaiting Reason = "step_waiting_confirm"
 	// ReasonStepSkipped 表示步骤目标在当前观察下已经满足，无需再执行。
 	ReasonStepSkipped Reason = "step_already_satisfied"
 )

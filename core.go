@@ -182,7 +182,13 @@ func (c *Core) expireBlocksLocked(at time.Time) bool {
 	changed := false
 	for id, runtime := range c.runtime {
 		if runtime.BlockedUntil != nil && !runtime.BlockedUntil.After(at) {
-			c.runtime[id] = ruleRuntime{}
+			// 解除到期的覆盖，但保留进行中的动作组运行：
+			// 等待确认的状态与期限不得随重置丢失。
+			runtime.BlockedUntil = nil
+			runtime.Blocked = false
+			runtime.Satisfied = false
+			runtime.Fired = false
+			c.runtime[id] = runtime
 			changed = true
 		}
 	}
@@ -288,7 +294,10 @@ func (c *Core) evaluateRulesLocked(at time.Time) bool {
 		if !matched {
 			// 条件变假会解除“直到重新装弹”式人工覆盖，并重置持续计时。
 			if runtime.Satisfied || runtime.Fired || runtime.Blocked {
-				c.runtime[rule.ID] = ruleRuntime{}
+				// 保留进行中的动作组运行：由 evaluateGroupsLocked
+				// 记录明确的取消决策，而不是让等待确认的状态静默消失。
+				group := runtime.Group
+				c.runtime[rule.ID] = ruleRuntime{Group: group}
 				changed = true
 			}
 			continue
